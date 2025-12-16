@@ -31,13 +31,14 @@ warnings.filterwarnings("ignore", category=UserWarning)
 import deepmimo as dm
 from sklearn.metrics import mean_squared_error
 import numpy as np
-    
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 
 # %%
-scenario = 'boston5g_28'
+scenario = 'city_89_nairobi_3p5'
+# scenario = 'city_0_newyork_3p5'
+
 dm.download(scenario)
 dataset = dm.load(scenario, )
 
@@ -51,7 +52,7 @@ dm.info()
 
 # %%
 config = {
-    "BATCH_SIZE":64,
+    "BATCH_SIZE":128,
     "PAD_VALUE": 500,
     "USE_WANDB": False,
     "LR":2e-5,
@@ -76,8 +77,11 @@ class MySeqDataLoader(torch.utils.data.Dataset):
         self.sort_by = sort_by
         self.dataset_filtered = defaultdict(list)
         self.total_length = 0
+        print("Dataset type:", type(self.dataset), len(self.dataset), )
+     
+        # if (type(self.dataset) != type([])) or hasattr(self.dataset, 'los'):
+        if isinstance(self.dataset.n_ue, int):
         
-        if type(self.dataset) == dict:
             self.dataset = [self.dataset]
         
         if split_by == "Tx":
@@ -85,6 +89,7 @@ class MySeqDataLoader(torch.utils.data.Dataset):
             if train:
                 self.Txs = self.Txs[:int(train_ratio * len(self.Txs))]
             else:
+
                 self.Txs = self.Txs[int(train_ratio * len(self.Txs)):]
 
             for tx in self.Txs:
@@ -98,8 +103,10 @@ class MySeqDataLoader(torch.utils.data.Dataset):
                 self.dataset_filtered["tx_pos"].extend(np.repeat(self.dataset[tx]["tx_pos"], n_ue, axis=0).tolist())
 
         elif split_by == "user":
+            print("User-level splitting", len(self.dataset))
             for tx in range(len(self.dataset)):
                 n_ue = self.dataset[tx].n_ue
+                print("tx_pos:", n_ue)
 
                 # --- user-level splitting ---
                 indices = np.arange(n_ue)
@@ -123,9 +130,15 @@ class MySeqDataLoader(torch.utils.data.Dataset):
                         self.dataset_filtered[k].extend(self.dataset[tx][k][indices].tolist())
 
                 # TX position duplicated for each UE sample
-                self.dataset_filtered["tx_pos"].extend(
-                    np.repeat(self.dataset[tx]["tx_pos"], len(indices), axis=0).tolist()
-                )
+                if np.array(self.dataset[tx]["tx_pos"]).ndim == 1:
+                    self.dataset_filtered["tx_pos"].extend(
+                        np.repeat(self.dataset[tx]["tx_pos"][np.newaxis, :], len(indices), axis=0).tolist()
+                    )
+                else:
+                    self.dataset_filtered["tx_pos"].extend(
+                        np.repeat(self.dataset[tx]["tx_pos"], len(indices), axis=0).tolist()
+                    )
+
         
         self.seed = seed
         self.total_length = len(self.dataset_filtered[list(self.dataset_filtered.keys())[0]])
@@ -167,6 +180,7 @@ class MySeqDataLoader(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         prompt = []
         for k in ["tx_pos", "rx_pos"]:
+            print(k, self.dataset_filtered[k][idx])
             prompt.extend(self.dataset_filtered[k][idx])
         
         # Sort paths based on sort_by option

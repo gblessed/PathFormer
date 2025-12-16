@@ -1,0 +1,10 @@
+# Ignore model checkpoints, logs, and large data folders
+checkpoints2/
+deepmimo_scenarios/
+wandb/
+logs/
+
+# Ignore model/data binary files
+*.mat
+*.pth
+*.pt
