@@ -46,22 +46,24 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 import wandb
 
 # %%
-all_scenarios = os.listdir('deepmimo_scenarios')
+scenario = 'boston5g_28'
 
 
-random.shuffle(all_scenarios)
+
 
 
 config = {
-    "BATCH_SIZE":256,
+    "BATCH_SIZE":64,
     "PAD_VALUE": 500,
     "USE_WANDB": True,
     "LR":2e-5,
-    "epochs" : 150,
+    "epochs" : 50,
     "interaction_weight": 0.01,  # Weight for interaction loss
     # "experiment": "interacaction_power_only_dec_only",
-
-    "experiment": f"pre_train_all_scenarios_interaction_weight_0.01",
+    "pre_train": False,
+    "base_experiment": f"pre_train_all_scenarios_interaction_weight_0.01",
+    "experiment": f"finetune_{scenario}_interaction_weight_0.01",
+    "finetune_scenario": "city_0_newyork_3p5",
 }
 
 
@@ -282,51 +284,7 @@ class MySeqDataLoader(torch.utils.data.Dataset):
         batch_environment_material_props = torch.cat([i[5].unsqueeze(0) for i in batch], dim=0)
         return batch_prompts, batch_paths, batch_num_paths, batch_interactions, batch_environment, batch_environment_material_props
 
-# add %%
-bad_scenarios = []
-for scenario in all_scenarios[:1]:
 
-    
-    try:
-        # %%
-        print(f"Processing scenario: {scenario}")
-        dataset = dm.load(scenario, )
-        print(f"Loaded scenario: {scenario}")
-
-        # %%
-        train_data  = MySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
-
-        train_loader = torch.utils.data.DataLoader(
-            dataset     = train_data,
-            batch_size  = config['BATCH_SIZE'],
-            shuffle     = True,
-            collate_fn= train_data.collate_fn
-            )
-        val_data  = MySeqDataLoader(dataset, train=False, split_by="user", sort_by="power")
-        val_loader = torch.utils.data.DataLoader(
-            dataset     = val_data,
-            batch_size  = config['BATCH_SIZE'],
-            shuffle     = False,
-            collate_fn= val_data.collate_fn
-            )
-
-        for item in train_loader:
-            print(f"Prompt shape: {item[0].shape}, Paths shape: {item[1].shape}, Num paths shape: {item[2].shape} , Interactions shape: {item[3].shape}, Environment shape: {item[4].shape} Environment Material Props shape: {item[5].shape} ")
-
-        # %%
-            print("No. of Train Points   : ", train_data.__len__())
-            print("Batch Size           : ", config["BATCH_SIZE"])
-            print("Train Batches        : ", train_loader.__len__())
-            print("No. of Train Points   : ", val_data.__len__())
-            print("Val Batches          : ", val_loader.__len__())
-            break
-        del dataset
-    except Exception as e:
-        bad_scenarios.append(scenario)
-        print(f"Error loading scenario {scenario}: {e}")
-        continue
-    # %%
-print("bad scenarios:", bad_scenarios)
 def generate_paths(model, prompt, max_steps=25, stop_threshold=0.5):
     """
     Generate paths autoregressively.
@@ -855,7 +813,7 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=config["LR"])
 # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=2, mode="min")
 scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
     optimizer,
-    T_0=25,      # Restart every 10 epochs
+    T_0=20,      # Restart every 10 epochs
     T_mult=1,    # Double the period after each restart
     eta_min=1e-8 # Minimum LR
 )
@@ -863,9 +821,12 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
 # Initialize best checkpoint tracking (based on path_length loss)
 
 # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=2, mode="min")
-pre_train = config.get("pre_train", True)
+pre_train = config["pre_train"]
 best_val_loss = float('inf')
+base_model_checkpoint_path = f"{config['base_experiment']}_best_model_checkpoint.pth"
+base_model_checkpoint_path = os.path.join("checkpoints2", base_model_checkpoint_path)
 checkpoint_path = f"{config['experiment']}_best_model_checkpoint.pth"
+
 os.makedirs("checkpoints2", exist_ok=True)
 checkpoint_path = os.path.join("checkpoints2", checkpoint_path)
 def train_with_interactions(model, config):
@@ -891,200 +852,173 @@ def train_with_interactions(model, config):
     val_loss_interaction = []  # NEW
     val_path_length_rmse = []
 
-    all_scenarios = os.listdir('deepmimo_scenarios')
-    all_scenarios.remove("o1_3p5")
-    all_scenarios.remove("o1b_3p5")
+
     for epoch in range(config["epochs"]):
-        random.shuffle(all_scenarios)
-        
-        for scenario in all_scenarios:
-            try:
-                print(f"Training on scenario: {scenario}")
-                dataset = dm.load(scenario)
-                train_data  = MySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
-                train_loader = torch.utils.data.DataLoader(
-                    dataset     = train_data,
-                    batch_size  = config['BATCH_SIZE'],
-                    shuffle     = True,
-                    collate_fn= train_data.collate_fn
-                    )
-                val_data  = MySeqDataLoader(dataset, train=False, split_by="user", sort_by="power")
-                val_loader = torch.utils.data.DataLoader(
-                    dataset     = val_data,
-                    batch_size  = config['BATCH_SIZE'],
-                    shuffle     = False,
-                    collate_fn= val_data.collate_fn
-                    )
+         # -------------------- TRAINING --------------------
+        model.train()
 
-        
-                # -------------------- TRAINING --------------------
-                model.train()
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False)
+        for prompts, paths, path_lengths, interactions, env, env_prop in pbar:  # NEW: added interactions
+            prompts = prompts.cuda()
+            paths = paths.cuda()
+            path_lengths = path_lengths.cuda()
+            interactions = interactions.cuda()  # NEW
+            env = env.cuda()
+            env_prop = env_prop.cuda()
 
-                pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False)
-                for prompts, paths, path_lengths, interactions, env, env_prop in pbar:  # NEW: added interactions
-                    prompts = prompts.cuda()
-                    paths = paths.cuda()
-                    path_lengths = path_lengths.cuda()
-                    interactions = interactions.cuda()  # NEW
-                    env = env.cuda()
-                    env_prop = env_prop.cuda()
+            paths_in = paths[:, :-1, :]
+            interactions_in = interactions[:, :-1, :]
 
-                    paths_in = paths[:, :-1, :]
-                    interactions_in = interactions[:, :-1, :]
-
-                    paths_out = paths[:, 1:, :]
-                    interactions_out = interactions[:, 1:, :]  # NEW: shift targets     
+            paths_out = paths[:, 1:, :]
+            interactions_out = interactions[:, 1:, :]  # NEW: shift targets     
 
 
-                    (delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
-                    path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in, env, env_prop, pre_train=pre_train)
+            (delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
+            path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in, env, env_prop, pre_train=pre_train)
 
-                    (total_loss, loss_delay, loss_power, loss_phase,
-                    loss_path_length, loss_interaction) = masked_loss(
-                        delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
-                        path_length_pred, interaction_logits, paths_out, path_lengths,
-                        interactions_out, pad_value=train_data.pad_value,
-                        interaction_weight=config.get("interaction_weight", 0.1)
-                    )
+            (total_loss, loss_delay, loss_power, loss_phase,
+            loss_path_length, loss_interaction) = masked_loss(
+                delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
+                path_length_pred, interaction_logits, paths_out, path_lengths,
+                interactions_out, pad_value=train_data.pad_value,
+                interaction_weight=config.get("interaction_weight", 0.1)
+            )
 
-                    optimizer.zero_grad()
-                    total_loss.backward()
-                    optimizer.step()
-                    scheduler.step()
-                    path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1),
-                                                            path_lengths)
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
+            
+            path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1),
+                                                    path_lengths)
 
-                    train_losses.append(total_loss.item())
-                    train_loss_delay.append(loss_delay.item())
-                    train_loss_power.append(loss_power.item())
-                    train_loss_phase.append(loss_phase.item())
-                    train_loss_path_length.append(loss_path_length.item())
-                    train_loss_interaction.append(loss_interaction.item())  # NEW
-                    train_path_length_rmse.append(path_length_rmse)
-                    current_lr = optimizer.param_groups[0]["lr"]
-                    pbar.set_postfix({
-                        "loss": f"{total_loss.item():.4f}",
-                        "delay": f"{loss_delay.item():.4f}",
-                        "power": f"{loss_power.item():.4f}",
-                        "phase": f"{loss_phase.item():.4f}",
-                        "inter": f"{loss_interaction.item():.4f}",  # NEW
-                        "path_rmse": f"{path_length_rmse:.4f}",
-                        "lr": f"{current_lr:.2e}"
-                    })
+            train_losses.append(total_loss.item())
+            train_loss_delay.append(loss_delay.item())
+            train_loss_power.append(loss_power.item())
+            train_loss_phase.append(loss_phase.item())
+            train_loss_path_length.append(loss_path_length.item())
+            train_loss_interaction.append(loss_interaction.item())  # NEW
+            train_path_length_rmse.append(path_length_rmse)
+            current_lr = optimizer.param_groups[0]["lr"]
+            pbar.set_postfix({
+                "loss": f"{total_loss.item():.4f}",
+                "delay": f"{loss_delay.item():.4f}",
+                "power": f"{loss_power.item():.4f}",
+                "phase": f"{loss_phase.item():.4f}",
+                "inter": f"{loss_interaction.item():.4f}",  # NEW
+                "path_rmse": f"{path_length_rmse:.4f}",
+                "lr": f"{current_lr:.2e}"
+            })
 
-                avg_train_loss = np.mean(train_losses)
-                avg_train_delay = np.mean(train_loss_delay)
-                avg_train_power = np.mean(train_loss_power)
-                avg_train_phase = np.mean(train_loss_phase)
-                avg_train_path_length = np.mean(train_loss_path_length)
-                avg_train_interaction = np.mean(train_loss_interaction)  # NEW
-                avg_train_path_length_rmse = np.mean(train_path_length_rmse)
+        avg_train_loss = np.mean(train_losses)
+        avg_train_delay = np.mean(train_loss_delay)
+        avg_train_power = np.mean(train_loss_power)
+        avg_train_phase = np.mean(train_loss_phase)
+        avg_train_path_length = np.mean(train_loss_path_length)
+        avg_train_interaction = np.mean(train_loss_interaction)  # NEW
+        avg_train_path_length_rmse = np.mean(train_path_length_rmse)
+        scheduler.step()
+        # -------------------- VALIDATION --------------------
+        model.eval()
 
-                # -------------------- VALIDATION --------------------
-                model.eval()
-
-                with torch.no_grad():
-                    pbar = tqdm(val_loader, desc=f"Epoch {epoch} [Val]", leave=False)
-                    for prompts, paths, path_lengths, interactions, env, env_prop in pbar:  # NEW
-                        prompts = prompts.cuda()
-                        paths = paths.cuda()
-                        path_lengths = path_lengths.cuda()
-                        interactions = interactions.cuda()  # NEW
-                        env = env.cuda()
-                        env_prop = env_prop.cuda()
+        with torch.no_grad():
+            pbar = tqdm(val_loader, desc=f"Epoch {epoch} [Val]", leave=False)
+            for prompts, paths, path_lengths, interactions, env, env_prop in pbar:  # NEW
+                prompts = prompts.cuda()
+                paths = paths.cuda()
+                path_lengths = path_lengths.cuda()
+                interactions = interactions.cuda()  # NEW
+                env = env.cuda()
+                env_prop = env_prop.cuda()
 
 
-                        paths_in = paths[:, :-1, :]
-                        interactions_in = interactions[:, :-1, :]
+                paths_in = paths[:, :-1, :]
+                interactions_in = interactions[:, :-1, :]
 
-                        paths_out = paths[:, 1:, :]
-                        interactions_out = interactions[:, 1:, :]  # NEW: shift targets
+                paths_out = paths[:, 1:, :]
+                interactions_out = interactions[:, 1:, :]  # NEW: shift targets
 
-                        (delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
-                        path_length_pred, interaction_logits) = model(prompts, paths_in,interactions_in, env, env_prop, pre_train=pre_train)
+                (delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
+                path_length_pred, interaction_logits) = model(prompts, paths_in,interactions_in, env, env_prop, pre_train=pre_train)
 
-                        (total_loss, loss_delay, loss_power, loss_phase,
-                        loss_path_length, loss_interaction) = masked_loss(
-                            delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
-                            path_length_pred, interaction_logits, paths_out, path_lengths,
-                            interactions_out, pad_value=train_data.pad_value,
-                            interaction_weight=config.get("interaction_weight", 0.1)
-                        )
+                (total_loss, loss_delay, loss_power, loss_phase,
+                loss_path_length, loss_interaction) = masked_loss(
+                    delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
+                    path_length_pred, interaction_logits, paths_out, path_lengths,
+                    interactions_out, pad_value=train_data.pad_value,
+                    interaction_weight=config.get("interaction_weight", 0.1)
+                )
 
-                        path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1),
-                                                            path_lengths)
+                path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1),
+                                                    path_lengths)
 
-                        val_losses.append(total_loss.item())
-                        val_loss_delay.append(loss_delay.item())
-                        val_loss_power.append(loss_power.item())
-                        val_loss_phase.append(loss_phase.item())
-                        val_loss_path_length.append(loss_path_length.item())
-                        val_loss_interaction.append(loss_interaction.item())  # NEW
-                        val_path_length_rmse.append(path_length_rmse)
+                val_losses.append(total_loss.item())
+                val_loss_delay.append(loss_delay.item())
+                val_loss_power.append(loss_power.item())
+                val_loss_phase.append(loss_phase.item())
+                val_loss_path_length.append(loss_path_length.item())
+                val_loss_interaction.append(loss_interaction.item())  # NEW
+                val_path_length_rmse.append(path_length_rmse)
 
-                        pbar.set_postfix({
-                            "val_loss": f"{total_loss.item():.4f}",
-                            "inter": f"{loss_interaction.item():.4f}",  # NEW
+                pbar.set_postfix({
+                    "val_loss": f"{total_loss.item():.4f}",
+                    "inter": f"{loss_interaction.item():.4f}",  # NEW
 
-                        })
+                })
 
-                avg_val_loss = np.mean(val_losses)
-                avg_val_delay = np.mean(val_loss_delay)
-                avg_val_power = np.mean(val_loss_power)
-                avg_val_phase = np.mean(val_loss_phase)
-                avg_val_path_length = np.mean(val_loss_path_length)
-                avg_val_interaction = np.mean(val_loss_interaction)  # NEW
-                avg_val_path_length_rmse = np.mean(val_path_length_rmse)
+        avg_val_loss = np.mean(val_losses)
+        avg_val_delay = np.mean(val_loss_delay)
+        avg_val_power = np.mean(val_loss_power)
+        avg_val_phase = np.mean(val_loss_phase)
+        avg_val_path_length = np.mean(val_loss_path_length)
+        avg_val_interaction = np.mean(val_loss_interaction)  # NEW
+        avg_val_path_length_rmse = np.mean(val_path_length_rmse)
 
-                # scheduler.step(avg_val_loss)
-                current_lr = optimizer.param_groups[0]["lr"]
+        # scheduler.step(avg_val_loss)
+        current_lr = optimizer.param_groups[0]["lr"]
 
-                # -------------------- CHECKPOINT SAVING --------------------
-                if avg_val_loss < best_val_loss:
-                    best_val_loss = avg_val_loss
-                    torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'scheduler_state_dict': scheduler.state_dict(),
-                        'best_val_loss': torch.tensor(best_val_loss),
-                    }, checkpoint_path)
-                    print(f"  ✓ Best checkpoint saved (val_loss: {best_val_loss:.4f})")
+        # -------------------- CHECKPOINT SAVING --------------------
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_val_loss': torch.tensor(best_val_loss),
+            }, checkpoint_path)
+            print(f"  ✓ Best checkpoint saved (val_loss: {best_val_loss:.4f})")
 
-                if config.get("USE_WANDB", False):
-                    import wandb
-                    wandb.log({
-                        "train_loss": avg_train_loss,
-                        "train_loss_delay": avg_train_delay,
-                        "train_loss_power": avg_train_power,
-                        "train_loss_phase": avg_train_phase,
-                        "train_loss_path_length": avg_train_path_length,
-                        "train_loss_interaction": avg_train_interaction,  # NEW
-                        "train_path_length_rmse": avg_train_path_length_rmse,
-                        "val_loss": avg_val_loss,
-                        "val_loss_delay": avg_val_delay,
-                        "val_loss_power": avg_val_power,
-                        "val_loss_phase": avg_val_phase,
-                        "val_loss_path_length": avg_val_path_length,
-                        "val_loss_interaction": avg_val_interaction,  # NEW
-                        "val_path_length_rmse": avg_val_path_length_rmse,
-                        "epoch": epoch,
-                        "lr": current_lr,
-                    })
+        if config.get("USE_WANDB", False):
+            import wandb
+            wandb.log({
+                "train_loss": avg_train_loss,
+                "train_loss_delay": avg_train_delay,
+                "train_loss_power": avg_train_power,
+                "train_loss_phase": avg_train_phase,
+                "train_loss_path_length": avg_train_path_length,
+                "train_loss_interaction": avg_train_interaction,  # NEW
+                "train_path_length_rmse": avg_train_path_length_rmse,
+                "val_loss": avg_val_loss,
+                "val_loss_delay": avg_val_delay,
+                "val_loss_power": avg_val_power,
+                "val_loss_phase": avg_val_phase,
+                "val_loss_path_length": avg_val_path_length,
+                "val_loss_interaction": avg_val_interaction,  # NEW
+                "val_path_length_rmse": avg_val_path_length_rmse,
+                "epoch": epoch,
+                "lr": current_lr,
+            })
 
-                print(f"\nEpoch {epoch:02d}")
-                print(f"  Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
-                print(f"    Delay: {avg_train_delay:.4f} (val: {avg_val_delay:.4f})")
-                print(f"    Power: {avg_train_power:.4f} (val: {avg_val_power:.4f})")
-                print(f"    Phase: {avg_train_phase:.4f} (val: {avg_val_phase:.4f})")
-                print(f"    Interaction: {avg_train_interaction:.4f} (val: {avg_val_interaction:.4f})")  # NEW
-                print(f"    PathLength: {avg_train_path_length:.4f} (val: {avg_val_path_length:.4f})")  # NEW
+        print(f"\nEpoch {epoch:02d}")
+        print(f"  Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        print(f"    Delay: {avg_train_delay:.4f} (val: {avg_val_delay:.4f})")
+        print(f"    Power: {avg_train_power:.4f} (val: {avg_val_power:.4f})")
+        print(f"    Phase: {avg_train_phase:.4f} (val: {avg_val_phase:.4f})")
+        print(f"    Interaction: {avg_train_interaction:.4f} (val: {avg_val_interaction:.4f})")  # NEW
+        print(f"    PathLength: {avg_train_path_length:.4f} (val: {avg_val_path_length:.4f})")  # NEW
 
-                print(f"  LR: {current_lr:.3e}")
-                del dataset, train_data, val_data, train_loader, val_loader
-            except Exception as e:
-                print(f"Error during training on scenario {scenario}: {e}")
-                continue
+        print(f"  LR: {current_lr:.3e}")
+
 
 
 # %%
@@ -1127,15 +1061,31 @@ def load_best_checkpoint(model, checkpoint_path="checkpoints2/best_model_checkpo
 # # torch.serialization.add_safe_globals([np._core.multiarray.scalar])
 # # torch.serialization.add_safe_globals([np.dtype])
 
+dataset = dm.load(scenario)
+train_data  = MySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
+train_loader = torch.utils.data.DataLoader(
+    dataset     = train_data,
+    batch_size  = config['BATCH_SIZE'],
+    shuffle     = True,
+    collate_fn= train_data.collate_fn
+    )
+val_data  = MySeqDataLoader(dataset, train=False, split_by="user", sort_by="power")
+val_loader = torch.utils.data.DataLoader(
+    dataset     = val_data,
+    batch_size  = config['BATCH_SIZE'],
+    shuffle     = False,
+    collate_fn= val_data.collate_fn
+    )
+
 # # Load best checkpoint for inference/evaluation
-best_epoch, best_loss = load_best_checkpoint(model, checkpoint_path=checkpoint_path)
+best_epoch, best_loss = load_best_checkpoint(model, checkpoint_path=base_model_checkpoint_path)
 
 train_with_interactions(model, config)
 # # %%
 # checkpoint_path
 
 # # %%
-# print(evaluate_model(model, val_loader))
+print(evaluate_model(model, val_loader))
 
 
 # %%
