@@ -15,4 +15,3 @@ print(scenarios)
 for scenario in scenarios:
     dm.download(scenario)
     print(f"Downloaded scenario: {scenario}")
-    

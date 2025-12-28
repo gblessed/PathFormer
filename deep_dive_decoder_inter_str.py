@@ -819,7 +819,7 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data)
         # -------------------- TRAINING --------------------
         model.train()
         train_losses = []
-        train_loss_delay = []
+        train_loss_delay =  []
         train_loss_power = []
         train_loss_phase = []
         train_loss_path_length = []
