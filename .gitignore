@@ -4,7 +4,7 @@ checkpoints20M/
 deepmimo_scenarios/
 wandb/
 logs/
-
+__pycache__/
 # Ignore model/data binary files
 *.mat
 *.pth

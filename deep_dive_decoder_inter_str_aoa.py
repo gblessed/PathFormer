@@ -55,7 +55,7 @@ dm.info()
 config = {
     "BATCH_SIZE":64,
     "PAD_VALUE": 500,
-    "USE_WANDB": True,
+    "USE_WANDB": False,
     "LR":2e-5,
     "epochs" : 100,
     "interaction_weight": 0.01,  # Weight for interaction loss
@@ -329,7 +329,7 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
 # Initialize best checkpoint tracking (based on path_length loss)
 
 # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=2, mode="min")
-
+mycomputer = MyChannelComputer()
 checkpoint_path = f"{config['experiment']}_best_model_checkpoint.pth"
 os.makedirs("checkpoints2", exist_ok=True)
 checkpoint_path = os.path.join("checkpoints2", checkpoint_path)
@@ -353,6 +353,7 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data)
         train_path_length_rmse = []
         train_loss_az = []
         train_loss_el = []
+        train_ch_nmse = []
         pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False)
         for prompts, paths, path_lengths, interactions in pbar:  # NEW: added interactions
             prompts = prompts.cuda()
@@ -385,7 +386,28 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data)
             scheduler.step()
             path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1), 
                                                     path_lengths)
+            ch_nmse = 0
+            if epoch >= 0:
+                pred_power_linear = 10**( ((power_pred.cpu().detach().numpy())/0.01)/10)
+                pred_delay_secs = delay_pred.cpu().detach().numpy()/ 1e6
 
+
+                delay_t = paths_out[:, :, 0].cpu().detach().numpy()
+                power_t = paths_out[:, :, 1].cpu().detach().numpy()
+                phase = paths_out[:, :, 2].cpu().detach().numpy()
+                az = paths_out[:, :, 3].cpu().detach().numpy()
+                el = paths_out[:, :, 4].cpu().detach().numpy()
+                power_linear = 10**( (power_t/0.01)/10)
+                delay_secs = delay_t/ 1e6
+
+                # predicted_channels = mycomputer.compute_channels(pred_power_linear,pred_delay_secs, phase_pred.cpu().detach().numpy(), az_pred.cpu().detach().numpy(), el_pred.cpu().detach().numpy(),kwargs=None  )
+                gt_channels = mycomputer.compute_channels(power_linear,delay_secs, phase, az, el ,kwargs=None )
+                predicted_channels = gt_channels+0.4
+                print("gt_ch",gt_channels.shape, (delay_secs*1e6).max() )
+
+
+                ch_nmse = compute_channel_nmse(predicted_channels, gt_channels)
+                train_ch_nmse.append(ch_nmse)
             train_losses.append(total_loss.item())
             train_loss_delay.append(loss_delay.item())
             train_loss_power.append(loss_power.item())
@@ -403,12 +425,14 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data)
             pbar.set_postfix({
                 "loss": f"{total_loss.item():.4f}",
                 "delay": f"{loss_delay.item():.4f}",
+                
                 "power": f"{loss_power.item():.4f}",
                 "phase": f"{loss_phase.item():.4f}",
                 "az": f"{loss_az.item():.4f}",
                 "el": f"{loss_el.item():.4f}",
                 "inter": f"{loss_interaction.item():.4f}",  # NEW
                 "path_rmse": f"{path_length_rmse:.4f}",
+                "ch_nmse":f"{ch_nmse:.4f}",
                 "lr": f"{current_lr:.2e}"
             })
 

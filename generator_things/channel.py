@@ -9,7 +9,8 @@ This module provides functionality for MIMO channel generation, including:
 The main function is generate_MIMO_channel() which generates MIMO channel matrices
 based on path information from ray-tracing and antenna configurations.
 """
-
+import torch
+import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 from typing import Dict, Optional, Any
@@ -292,7 +293,7 @@ def _generate_MIMO_channel(array_response_product: np.ndarray,
             print("To avoid clipping, either:")
             print("1. Increase the number of subcarriers (N)")
             print("2. Decrease the bandwidth (B)")
-            print(f"3. Switch to time-domain channel generation (set ch_params['{c.PARAMSET_FD_CH}'] = 0)")
+            print(f"3. Switch to time-domain channel generation 0(set ch_params['{c.PARAMSET_FD_CH}'] = 0)")
             # print(f"4. (not recommended) Turn off OFDM path trimming (set ch_params['{c.PARAMSET_OFDM_PATH_TRIM}'] = False)")
             print("-" * 50)
 
@@ -332,5 +333,77 @@ def _generate_MIMO_channel(array_response_product: np.ndarray,
         else: # TD channel
             path_gains = np.sqrt(power) * np.exp(1j * (np.deg2rad(phases_user) + 2 * np.pi * dopplers_user))
             channel[i, ..., :n_paths] = array_product * path_gains[None, None, :]
+
+    return channel
+
+
+
+
+
+
+def generate_MIMO_channel_torch(
+    array_response_product: torch.Tensor, # [n_ues, M_rx, M_tx, n_paths] (complex)
+    powers: torch.Tensor,                 # [n_ues, n_paths]
+    delays: torch.Tensor,                 # [n_ues, n_paths]
+    phases: torch.Tensor,                 # [n_ues, n_paths]
+    dopplers: torch.Tensor,               # [n_ues, n_paths]
+    ofdm_params: dict,
+    freq_domain: bool = True
+) -> torch.Tensor:
+    
+    Ts = 1 / ofdm_params['bandwidth']
+    N_sc = ofdm_params['n_sc_num']
+    subcarriers =ofdm_params[c.PARAMSET_OFDM_SC_SAMP]          # [n_sc]
+    device = array_response_product.device
+    n_ues, M_rx, M_tx, n_paths = array_response_product.shape
+    
+    # 1. Handle NaNs by zeroing them out (allows backprop through valid paths)
+    mask = ~torch.isnan(powers)
+    powers = torch.nan_to_num(powers, 0.0)
+    delays = torch.nan_to_num(delays, 0.0) 
+    phases = torch.nan_to_num(phases, 0.0)
+    dopplers = torch.nan_to_num(dopplers, 0.0)
+
+
+    if freq_domain:
+        # --- Frequency Domain Path Generation (Vectorized) ---
+        # Reshape inputs for broadcasting: [n_ues, n_paths, 1]
+        pwr_vec = powers.unsqueeze(-1)
+        delay_n = delays.unsqueeze(-1) / Ts
+        phase_vec = phases.unsqueeze(-1)
+        doppler_vec = dopplers.unsqueeze(-1)
+        
+        # Clip paths exceeding symbol duration (using smooth masking if needed, 
+        # but here we follow your logic of hard zeroing)
+        valid_delay_mask = (delay_n < N_sc).float()
+        
+        # Compute Path Gains: [n_ues, n_paths, n_subcarriers]
+        # Equivalent to your generate() logic
+        total_sc = len(subcarriers)
+        # Combine amplitude, phase, and doppler
+        path_const_base = torch.sqrt(pwr_vec / total_sc) * \
+                          torch.exp(1j * (torch.deg2rad(phase_vec) + 2 * torch.pi * doppler_vec))
+        
+        # Apply delay phase shifts
+        # (delay_n * subcarriers) -> [n_ues, n_paths, n_subcarriers]
+        delay_phases = torch.exp(-1j * (2 * torch.pi / total_sc) * (delay_n * subcarriers))
+        
+        path_gains = path_const_base * delay_phases * valid_delay_mask * mask.unsqueeze(-1)
+
+        # --- Channel Assembly ---
+        # array_response_product: [n_ues, M_rx, M_tx, n_paths]
+        # path_gains: [n_ues, n_paths, n_subcarriers]
+        # We need: sum over paths of (array_response_product * path_gains)
+        # Using einsum for clarity and speed:
+        # u: user, r: rx, t: tx, p: path, s: subcarrier
+        channel = torch.einsum('urtp,ups->urts', array_response_product, path_gains)
+
+    else:
+        # --- Time Domain Channel Generation ---
+        path_gains = torch.sqrt(powers) * torch.exp(1j * (torch.deg2rad(phases) + 2 * torch.pi * dopplers))
+        path_gains = path_gains * mask.float()
+        
+        # Broadcast gains to [n_ues, 1, 1, n_paths] and multiply
+        channel = array_response_product * path_gains.view(n_ues, 1, 1, n_paths)
 
     return channel

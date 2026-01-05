@@ -6,6 +6,10 @@ import matplotlib.pyplot as plt
 import os
 from tqdm import tqdm
 import numpy as np
+from typing import Dict
+from generator_things.geometry import *
+from generator_things import consts as c
+from generator_things.channel import _generate_MIMO_channel, ChannelParameters
 
 
 def generate_paths(model, prompt, max_steps=25, stop_threshold=0.5):
@@ -57,7 +61,7 @@ def generate_paths(model, prompt, max_steps=25, stop_threshold=0.5):
 def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, 
                 az_sin_pred, az_cos_pred, el_sin_pred, el_cos_pred,
                 path_length_predict, interaction_logits, targets, path_length_targets,
-                interaction_targets, pad_value=500, interaction_weight=0.1):
+                interaction_targets, channel_pred=None, gt_channel= None, pad_value=500, interaction_weight=0.1):
     """
     Added interaction prediction loss as auxiliary task.
     
@@ -121,12 +125,14 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred,
     
     total_loss = (loss_delay + loss_power + loss_phase + loss_az + loss_el +
                   loss_path_length + interaction_weight * loss_interaction)
-
+    if channel_pred :
+        ch_loss = np.linalg.norm(channel_pred - gt_channel)**2
     # total_loss = (loss_delay + 
     #              + interaction_weight * loss_interaction)
      
     return (total_loss, loss_delay, loss_power, loss_phase, 
         loss_az, loss_el, loss_path_length, loss_interaction)
+
 
 def compute_stop_metrics(path_count, targets, pad_value=500):
     """
@@ -234,3 +240,192 @@ def load_best_checkpoint(model, checkpoint_path="checkpoints2/best_model_checkpo
     
     print(f"✓ Loaded best checkpoint from epoch {epoch} (val_loss: {best_avg_val_loss:.4f})")
     return epoch, best_avg_val_loss
+
+
+
+
+
+def nmse(y_true, y_pred):
+    """
+    Calculate the Normalized Mean Squared Error (NMSE) between true and predicted values.
+
+    Args:
+        y_true (array-like): Ground truth values.
+        y_pred (array-like): Predicted values.
+
+    Returns:
+        float: The NMSE value, computed as the mean squared error divided by the mean
+               squared magnitude of the true values.
+    """
+
+    return np.mean(np.abs(y_true - y_pred)**2) / np.mean(np.abs(y_true)**2)
+
+def pow2db(nmse):
+    """
+    Convert a Normalized Mean Squared Error (NMSE) value to decibels (dB).
+
+    Args:
+        nmse (float): The NMSE value to convert.
+
+    Returns:
+        float: The NMSE value in decibels, calculated as 10 * log10(nmse).
+    """
+    return 10 * np.log10(nmse)
+
+
+def compute_channel_nmse( predicted_channels, gt_channels):
+    
+    # pred_delay = pred[:, 0]/ 1e6
+    # pred_power = pred[:, 1]/0.01
+    # pred_power = 10**(pred_power/10)
+    # pred_phase = pred[:, 2]
+
+
+    # gt_delay = gt[:, 0]/ 1e6
+    # gt_power = gt[:, 1]/0.01
+    # gt_power = 10**(gt_power/10)
+    # gt_phase = gt[:, 2]
+    # predicted_channels = mycomputer.compute_channels(pred_power,pred_delay, pred_phase, kwargs=None )
+    # gt_channels = mycomputer.compute_channels(gt_power,gt_delay, gt_phase, kwargs=None )
+
+    return pow2db(nmse(predicted_channels, gt_channels))
+
+# ChannelParameters()
+# _ = dataset._compute_channels(ch_params)
+
+class MyChannelComputer:
+
+    def _compute_single_array_response(self, ant_params: Dict, theta: np.ndarray, 
+                                        phi: np.ndarray) -> np.ndarray:
+        """Internal method to compute array response for a single antenna array.
+        
+        Args:
+            ant_params: Antenna parameters dictionary
+            theta: Elevation angles array
+            phi: Azimuth angles array
+            
+        Returns:
+            Array response matrix
+        """
+        # Use attribute access for antenna parameters
+        kd = 2 * np.pi * ant_params.spacing
+        ant_ind = ant_indices(ant_params[c.PARAMSET_ANT_SHAPE]) # tuple complications..
+       
+        return array_response_batch(ant_ind=ant_ind, theta=theta, phi=phi, kd=kd)
+
+
+    def set_channel_params(self, params: Optional[ChannelParameters] = None) -> None:
+        """Set channel generation parameters.
+        
+        Args:
+            params: Channel generation parameters. If None, uses default parameters.
+        """
+        if params is None:
+            params = ChannelParameters()
+            
+        # params.validate(dataset.n_ue)
+        
+        # Create a deep copy of the parameters to ensure isolation
+        # old_params = (super().__getitem__(c.CH_PARAMS_PARAM_NAME) 
+        #               if c.CH_PARAMS_PARAM_NAME in super().keys() else None)
+        old_params = None
+        self.ch_params = params.deepcopy()
+        
+        # If rotation has changed, clear rotated angles cache
+        if old_params is not None:
+            old_bs_rot = old_params.bs_antenna[c.PARAMSET_ANT_ROTATION]
+            old_ue_rot = old_params.ue_antenna[c.PARAMSET_ANT_ROTATION]
+            new_bs_rot = params.bs_antenna[c.PARAMSET_ANT_ROTATION]
+            new_ue_rot = params.ue_antenna[c.PARAMSET_ANT_ROTATION]
+            if not np.array_equal(old_bs_rot, new_bs_rot) or not np.array_equal(old_ue_rot, new_ue_rot):
+                self._clear_cache_rotated_angles()
+        
+        return params
+    def _compute_array_response_product(self, aod_az=None, aod_el=None) -> np.ndarray:
+        """Internal method to compute product of TX and RX array responses.
+        args:
+        aod_az , aod_el (Num_ue x path_length) in radians
+
+        Returns:
+            Array response product matrix
+
+        """
+        # Get antenna parameters from channel parameters
+        tx_ant_params = self.ch_params.bs_antenna # base case is 8x1
+        rx_ant_params = self.ch_params.ue_antenna # base case is 1x1
+        
+
+        array_response_TX = self._compute_single_array_response(
+            tx_ant_params, aod_az, aod_el)
+            
+
+
+        return array_response_TX[:, None, :, :]
+        return array_response_RX[:, :, None, :] * array_response_TX[:, None, :, :]
+    
+
+    def compute_channels(self, _power_linear_ant_gain, delay, phase, aod_az=None, aod_el=None, params: Optional[ChannelParameters] = None, use_doppler = False, **kwargs) -> np.ndarray:
+        """Compute MIMO channel matrices for all users.
+        
+        This is the main public method for computing channel matrices. It handles all the
+        necessary preprocessing steps including:
+        - Antenna pattern application
+        - Field of view filtering
+        - Array response computation
+        - OFDM processing (if enabled)
+        
+        The computed channel will be cached and accessible as dataset.channel
+        or dataset['channel'] after this call.
+        
+        Args:
+            params: Channel generation parameters. If None, uses default parameters.
+                    See ChannelParameters class for details.
+            **kwargs: Additional keyword arguments to pass to ChannelParameters constructor
+                    if params is None. Ignored if params is provided. 
+                    If provided, overrides existing channel parameters (e.g. set_channel_params).
+            
+        Returns:
+            numpy.ndarray: MIMO channel matrix with shape [n_users, n_rx_ant, n_tx_ant, n_subcarriers]
+                        if freq_domain=True, otherwise [n_users, n_rx_ant, n_tx_ant, n_paths]
+        """
+        if params is None:
+            if kwargs:
+                params = ChannelParameters(**kwargs)
+            else:
+                params = self.ch_params if self.ch_params is not None else ChannelParameters()
+
+        self.set_channel_params(params)
+
+        # np.random.seed(1001)
+        
+        # Compute array response product
+        array_response_product = self._compute_array_response_product(aod_az, aod_el)
+        n_paths_to_gen = params.num_paths
+        
+        # Whether to enable the doppler shift per path in the channel
+        n_paths = np.min((n_paths_to_gen, delay.shape[-1]))
+        default_doppler = np.zeros((delay.shape[0], n_paths))
+        # use_doppler = self.hasattr('doppler')
+
+        if params[c.PARAMSET_DOPPLER_EN] and not use_doppler:
+            all_obj_vel = np.array([obj.vel for obj in self.scene.objects])
+            # Enable doppler if any velocity component is non-zero
+            use_doppler = self.tx_vel.any() or self.rx_vel.any() or all_obj_vel.any()
+            if not use_doppler:
+                print("No doppler in channel generation because all velocities are zero")
+
+        dopplers = self.doppler[..., :n_paths] if use_doppler else default_doppler
+
+        channel = _generate_MIMO_channel(
+            array_response_product=array_response_product[..., :n_paths],
+            powers=_power_linear_ant_gain[..., :n_paths],
+            delays=delay[..., :n_paths],
+            phases=phase[..., :n_paths],
+            dopplers=dopplers,
+            ofdm_params=params.ofdm,
+            freq_domain=params.freq_domain,
+        )
+
+        # self[c.CHANNEL_PARAM_NAME] = channel  # Cache the result
+
+        return channel
