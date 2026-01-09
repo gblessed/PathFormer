@@ -1,6 +1,7 @@
 # Ignore model checkpoints, logs, and large data folders
 checkpoints2/
 checkpoints20M/
+checkpoints_channel/
 deepmimo_scenarios/
 wandb/
 logs/

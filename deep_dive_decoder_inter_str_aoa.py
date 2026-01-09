@@ -55,7 +55,7 @@ dm.info()
 config = {
     "BATCH_SIZE":64,
     "PAD_VALUE": 500,
-    "USE_WANDB": False,
+    "USE_WANDB": True,
     "LR":2e-5,
     "epochs" : 100,
     "interaction_weight": 0.01,  # Weight for interaction loss
@@ -333,7 +333,7 @@ mycomputer = MyChannelComputer()
 checkpoint_path = f"{config['experiment']}_best_model_checkpoint.pth"
 os.makedirs("checkpoints2", exist_ok=True)
 checkpoint_path = os.path.join("checkpoints2", checkpoint_path)
-def train_with_interactions(model, train_loader, val_loader, config, train_data):
+def train_with_interactions(model, train_loader, val_loader, config, train_data, task=None):
     """
     Modified training loop with interaction prediction.
     """
@@ -372,14 +372,13 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data)
              path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
 
             (total_loss, loss_delay, loss_power, loss_phase,
-             loss_az, loss_el, loss_path_length, loss_interaction) = masked_loss(
-                delay_pred, power_pred, phase_sin_pred, phase_cos_pred,
-                az_sin_pred, az_cos_pred, el_sin_pred, el_cos_pred,
+             loss_az, loss_el, loss_path_length, loss_interaction,loss_channel) = masked_loss(
+                delay_pred, power_pred, phase_sin_pred, phase_cos_pred,phase_pred,
+                az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred,el_pred,
                 path_length_pred, interaction_logits, paths_out, path_lengths,
-                interactions_out, pad_value=train_data.pad_value,
+                interactions_out, finetune=task, pad_value=train_data.pad_value,
                 interaction_weight=config.get("interaction_weight", 0.1)
             )
-
             optimizer.zero_grad()
             total_loss.backward()
             optimizer.step()
@@ -388,26 +387,26 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data)
                                                     path_lengths)
             ch_nmse = 0
             if epoch >= 0:
-                pred_power_linear = 10**( ((power_pred.cpu().detach().numpy())/0.01)/10)
-                pred_delay_secs = delay_pred.cpu().detach().numpy()/ 1e6
+                pass
+                # pred_power_linear = 10**( ((power_pred.cpu().detach().numpy())/0.01)/10)
+                # pred_delay_secs = delay_pred.cpu().detach().numpy()/ 1e6
 
 
-                delay_t = paths_out[:, :, 0].cpu().detach().numpy()
-                power_t = paths_out[:, :, 1].cpu().detach().numpy()
-                phase = paths_out[:, :, 2].cpu().detach().numpy()
-                az = paths_out[:, :, 3].cpu().detach().numpy()
-                el = paths_out[:, :, 4].cpu().detach().numpy()
-                power_linear = 10**( (power_t/0.01)/10)
-                delay_secs = delay_t/ 1e6
+                # delay_t = paths_out[:, :, 0].cpu().detach().numpy()
+                # power_t = paths_out[:, :, 1].cpu().detach().numpy()
+                # phase = paths_out[:, :, 2].cpu().detach().numpy()
+                # az = paths_out[:, :, 3].cpu().detach().numpy()
+                # el = paths_out[:, :, 4].cpu().detach().numpy()
+                # power_linear = 10**( (power_t/0.01)/10)
+                # delay_secs = delay_t/ 1e6
 
                 # predicted_channels = mycomputer.compute_channels(pred_power_linear,pred_delay_secs, phase_pred.cpu().detach().numpy(), az_pred.cpu().detach().numpy(), el_pred.cpu().detach().numpy(),kwargs=None  )
-                gt_channels = mycomputer.compute_channels(power_linear,delay_secs, phase, az, el ,kwargs=None )
-                predicted_channels = gt_channels+0.4
-                print("gt_ch",gt_channels.shape, (delay_secs*1e6).max() )
+                # gt_channels = mycomputer.compute_channels(power_linear,delay_secs, phase, az, el ,kwargs=None )
+   
 
 
-                ch_nmse = compute_channel_nmse(predicted_channels, gt_channels)
-                train_ch_nmse.append(ch_nmse)
+                # ch_nmse = compute_channel_nmse(predicted_channels, gt_channels)
+            train_ch_nmse.append(ch_nmse)
             train_losses.append(total_loss.item())
             train_loss_delay.append(loss_delay.item())
             train_loss_power.append(loss_power.item())
@@ -476,13 +475,13 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data)
                 (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
                  az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
                  path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
-
+                
                 (total_loss, loss_delay, loss_power, loss_phase,
-                 loss_az, loss_el, loss_path_length, loss_interaction) = masked_loss(
-                    delay_pred, power_pred, phase_sin_pred, phase_cos_pred,
-                    az_sin_pred, az_cos_pred, el_sin_pred, el_cos_pred,
+                loss_az, loss_el, loss_path_length, loss_interaction,loss_channel) = masked_loss(
+                    delay_pred, power_pred, phase_sin_pred, phase_cos_pred,phase_pred,
+                    az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred,el_pred,
                     path_length_pred, interaction_logits, paths_out, path_lengths,
-                    interactions_out, pad_value=train_data.pad_value,
+                    interactions_out, finetune=task, pad_value=train_data.pad_value,
                     interaction_weight=config.get("interaction_weight", 0.1)
                 )
 

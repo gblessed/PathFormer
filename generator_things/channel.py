@@ -17,6 +17,8 @@ from typing import Dict, Optional, Any
 from copy import deepcopy
 import generator_things.consts as c
 from generator_things.generator_utils import DotDict, compare_two_dicts, deep_dict_merge
+from typing import Tuple, Optional
+from numpy.typing import NDArray
 
 def _convert_lists_to_arrays(obj: Any) -> Any:
     """Recursively convert lists to numpy arrays in nested dictionaries.
@@ -64,13 +66,52 @@ class ChannelParameters(DotDict):
         params = ChannelParameters(bs_antenna={'shape': [4, 4]})  # Other bs_antenna fields preserved
     """
     # Default channel generation parameters
+    # DEFAULT_PARAMS = {
+    #     # BS Antenna Parameters
+    #     c.PARAMSET_ANT_BS: {
+    #         c.PARAMSET_ANT_SHAPE: np.array([8, 1]), # Antenna dimensions in X - Y - Z
+
+    #         c.PARAMSET_ANT_SPACING: 0.5,
+    #         c.PARAMSET_ANT_ROTATION: np.array([0, 0, 0]), # Rotation around X - Y - Z axes
+    #         c.PARAMSET_ANT_RAD_PAT: c.PARAMSET_ANT_RAD_PAT_VALS[0] # 'isotropic'
+    #     },
+        
+    #     # UE Antenna Parameters
+    #     c.PARAMSET_ANT_UE: {
+    #         c.PARAMSET_ANT_SHAPE: np.array([1, 1]), # Antenna dimensions in X - Y - Z
+    #         c.PARAMSET_ANT_SPACING: 0.5,
+    #         c.PARAMSET_ANT_ROTATION: np.array([0, 0, 0]), # Rotation around X - Y - Z axes
+    #         c.PARAMSET_ANT_RAD_PAT: c.PARAMSET_ANT_RAD_PAT_VALS[0] # 'isotropic'
+    #     },
+        
+    #     c.PARAMSET_DOPPLER_EN: 0,
+    #     c.PARAMSET_NUM_PATHS: c.MAX_PATHS, 
+        
+    #     c.PARAMSET_FD_CH: 1, # OFDM channel if 1, Time domain if 0
+        
+    #     # OFDM Parameters
+    #     c.PARAMSET_OFDM: {
+    #         c.PARAMSET_OFDM_SC_NUM: 512, # Number of total subcarriers
+    #         c.PARAMSET_OFDM_SC_SAMP: np.arange(1), # Select subcarriers to generate
+    #         c.PARAMSET_OFDM_BANDWIDTH: 10e6, # Hz
+    #         c.PARAMSET_OFDM_LPF: 0 # Receive Low Pass / ADC Filter
+    #     }
+    #     # c.PARAMSET_OFDM: {
+    #     #     c.PARAMSET_OFDM_SC_NUM: 32, # Number of total subcarriers
+    #     #     c.PARAMSET_OFDM_SC_SAMP: np.arange(32), # Select subcarriers to generate
+    #     #     c.PARAMSET_OFDM_BANDWIDTH: 10e6, # Hz
+    #     #     c.PARAMSET_OFDM_LPF: 0 # Receive Low Pass / ADC Filter
+    #     # }
+    # }
+    # Default channel generation parameters
     DEFAULT_PARAMS = {
         # BS Antenna Parameters
         c.PARAMSET_ANT_BS: {
             c.PARAMSET_ANT_SHAPE: np.array([8, 1]), # Antenna dimensions in X - Y - Z
             c.PARAMSET_ANT_SPACING: 0.5,
-            c.PARAMSET_ANT_ROTATION: np.array([0, 0, 0]), # Rotation around X - Y - Z axes
+            c.PARAMSET_ANT_ROTATION: np.array([0, 0, -135]), # Rotation around X - Y - Z axes
             c.PARAMSET_ANT_RAD_PAT: c.PARAMSET_ANT_RAD_PAT_VALS[0] # 'isotropic'
+     
         },
         
         # UE Antenna Parameters
@@ -88,13 +129,13 @@ class ChannelParameters(DotDict):
         
         # OFDM Parameters
         c.PARAMSET_OFDM: {
-            c.PARAMSET_OFDM_SC_NUM: 512, # Number of total subcarriers
-            c.PARAMSET_OFDM_SC_SAMP: np.arange(1), # Select subcarriers to generate
-            c.PARAMSET_OFDM_BANDWIDTH: 10e6, # Hz
-            c.PARAMSET_OFDM_LPF: 0 # Receive Low Pass / ADC Filter
+            c.PARAMSET_OFDM_SC_NUM: 32, # Number of total subcarriers
+            c.PARAMSET_OFDM_SC_SAMP: np.arange(32), # Select subcarriers to generate
+            c.PARAMSET_OFDM_BANDWIDTH: 30e3 *32, # Hz
+            c.PARAMSET_OFDM_LPF: 0, # Receive Low Pass / ADC Filter
         }
-    }
 
+    }
     def __init__(self, data: Optional[Dict] = None, **kwargs):
         """Initialize channel generation parameters.
         
@@ -235,12 +276,17 @@ class OFDM_PathGenerator:
         doppler_n[paths_over_FFT] = 0
         
         # Reshape path_const to be compatible with broadcasting
+        # print("Numpy doppler_n: ", doppler_n)
+
         path_const = np.sqrt(power / self.total_subcarriers) * np.exp(1j * (np.deg2rad(phase) + 2 * np.pi * doppler_n))
+        # print("phase",phase)
         if self.OFDM_params[c.PARAMSET_OFDM_LPF]: # Low-pass filter (LPF) convolution
             path_const = path_const * np.sinc(self.delay_d - delay_n) @ self.delay_to_OFDM
         else: # Path construction without LPF
             path_const = path_const * np.exp(-1j * (2 * np.pi / self.total_subcarriers) * 
                                              np.outer(delay_n.ravel(), self.subcarriers))
+            # print(self.subcarriers, "orig_path_const", np.exp(-1j * (2 * np.pi / self.total_subcarriers) * 
+            #                                  np.outer(delay_n.ravel(), self.subcarriers)))
         return path_const
 
 def _generate_MIMO_channel(array_response_product: np.ndarray,
@@ -302,14 +348,16 @@ def _generate_MIMO_channel(array_response_product: np.ndarray,
     M_rx, M_tx = array_response_product.shape[1:3]
     
     last_ch_dim = len(subcarriers) if freq_domain else max_paths
-    channel = np.zeros((n_ues, M_rx, M_tx, last_ch_dim), dtype=np.csingle)
+    channel = np.zeros((n_ues, M_rx, M_tx, last_ch_dim), dtype=np.csingle) # creates zeros 
     
     # Pre-compute NaN masks for all users using powers
     nan_masks = ~np.isnan(powers)  # [n_users, n_paths]
     valid_path_counts = np.sum(nan_masks, axis=1)  # [n_users]
 
     # Generate channels for each user
-    for i in tqdm(range(n_ues), desc='Generating channels'):
+    # for i in tqdm(range(n_ues), desc='Generating channels'):
+    for i in range(n_ues):
+    
         # Get valid paths for this user
         non_nan_mask = nan_masks[i]
         n_paths = valid_path_counts[i]
@@ -322,13 +370,14 @@ def _generate_MIMO_channel(array_response_product: np.ndarray,
         array_product = array_response_product[i][..., non_nan_mask]  # [M_rx, M_tx, n_valid_paths]
         
         # Get pre-computed values for this user
-        power = powers[i, non_nan_mask]
+        # gets   valid power, delays, phases
+        power = powers[i, non_nan_mask] 
         delays_user = delays[i, non_nan_mask]
         phases_user = phases[i, non_nan_mask]
         dopplers_user = dopplers[i, non_nan_mask]
-        
         if freq_domain: # OFDM
             path_gains = path_gen.generate(pwr=power, toa=delays_user, phs=phases_user, Ts=Ts, dopplers=dopplers_user).T
+           
             channel[i] = np.nansum(array_product[..., None, :] * path_gains[None, None, :, :], axis=-1)
         else: # TD channel
             path_gains = np.sqrt(power) * np.exp(1j * (np.deg2rad(phases_user) + 2 * np.pi * dopplers_user))
@@ -351,10 +400,12 @@ def generate_MIMO_channel_torch(
     freq_domain: bool = True
 ) -> torch.Tensor:
     
-    Ts = 1 / ofdm_params['bandwidth']
-    N_sc = ofdm_params['n_sc_num']
-    subcarriers =ofdm_params[c.PARAMSET_OFDM_SC_SAMP]          # [n_sc]
+    
+    Ts = 1 / ofdm_params[c.PARAMSET_OFDM_BANDWIDTH]
     device = array_response_product.device
+    subcarriers =torch.tensor(ofdm_params[c.PARAMSET_OFDM_SC_SAMP]).to(device)          # [n_sc]
+    total_subcarriers = torch.tensor(ofdm_params[c.PARAMSET_OFDM_SC_NUM]).to(device)    
+    array_response_product = array_response_product.unsqueeze(1)
     n_ues, M_rx, M_tx, n_paths = array_response_product.shape
     
     # 1. Handle NaNs by zeroing them out (allows backprop through valid paths)
@@ -369,27 +420,29 @@ def generate_MIMO_channel_torch(
         # --- Frequency Domain Path Generation (Vectorized) ---
         # Reshape inputs for broadcasting: [n_ues, n_paths, 1]
         pwr_vec = powers.unsqueeze(-1)
-        delay_n = delays.unsqueeze(-1) / Ts
+        delay_n = delays.unsqueeze(-1) / Ts # delay * Bandwidth
         phase_vec = phases.unsqueeze(-1)
         doppler_vec = dopplers.unsqueeze(-1)
         
         # Clip paths exceeding symbol duration (using smooth masking if needed, 
         # but here we follow your logic of hard zeroing)
-        valid_delay_mask = (delay_n < N_sc).float()
+        #valid_delay_mask = (delay_n < N_sc).float()
         
         # Compute Path Gains: [n_ues, n_paths, n_subcarriers]
         # Equivalent to your generate() logic
-        total_sc = len(subcarriers)
+
+        # print("doppler_vec", doppler_vec[0])
+
         # Combine amplitude, phase, and doppler
-        path_const_base = torch.sqrt(pwr_vec / total_sc) * \
+        path_const_base = torch.sqrt(pwr_vec / total_subcarriers) * \
                           torch.exp(1j * (torch.deg2rad(phase_vec) + 2 * torch.pi * doppler_vec))
-        
+        # print("Torch: phase_vec",phase_vec[0])
         # Apply delay phase shifts
         # (delay_n * subcarriers) -> [n_ues, n_paths, n_subcarriers]
-        delay_phases = torch.exp(-1j * (2 * torch.pi / total_sc) * (delay_n * subcarriers))
-        
-        path_gains = path_const_base * delay_phases * valid_delay_mask * mask.unsqueeze(-1)
-
+        delay_phases = torch.exp(-1j * (2 * torch.pi / total_subcarriers) * (delay_n * subcarriers))
+      
+        # path_gains = path_const_base * delay_phases * valid_delay_mask * mask.unsqueeze(-1)
+        path_gains = path_const_base * delay_phases  * mask.unsqueeze(-1)
         # --- Channel Assembly ---
         # array_response_product: [n_ues, M_rx, M_tx, n_paths]
         # path_gains: [n_ues, n_paths, n_subcarriers]

@@ -9,9 +9,12 @@ import numpy as np
 from typing import Dict
 from generator_things.geometry import *
 from generator_things import consts as c
-from generator_things.channel import _generate_MIMO_channel, ChannelParameters
+from generator_things.channel import _generate_MIMO_channel, ChannelParameters, generate_MIMO_channel_torch
 
+from typing import Tuple, Optional
+from numpy.typing import NDArray
 
+criterion =  torch.nn.MSELoss()
 def generate_paths(model, prompt, max_steps=25, stop_threshold=0.5):
     """
     Generate paths autoregressively.
@@ -58,10 +61,10 @@ def generate_paths(model, prompt, max_steps=25, stop_threshold=0.5):
 
 
 
-def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, 
-                az_sin_pred, az_cos_pred, el_sin_pred, el_cos_pred,
+def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred,el_pred,
                 path_length_predict, interaction_logits, targets, path_length_targets,
-                interaction_targets, channel_pred=None, gt_channel= None, pad_value=500, interaction_weight=0.1):
+                interaction_targets, finetune=None, pad_value=500, interaction_weight=0.1):
     """
     Added interaction prediction loss as auxiliary task.
     
@@ -125,13 +128,54 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred,
     
     total_loss = (loss_delay + loss_power + loss_phase + loss_az + loss_el +
                   loss_path_length + interaction_weight * loss_interaction)
-    if channel_pred :
-        ch_loss = np.linalg.norm(channel_pred - gt_channel)**2
+    channel_loss = 0
+    params = ChannelParameters()
+    if finetune == "channel_estimation":
+        delay_secs = delay_t/ 1e6
+        mask = delay_secs == (pad_value / 1e6)
+        power_t = power_t.masked_fill(mask, 0)
+        phase_t = torch.rad2deg(phase_t)
+        power_linear = 10**( (power_t/0.01)/10)
+        power_linear = power_linear.masked_fill(mask, torch.nan)
+        default_dopplers = torch.zeros_like(power_linear)
+        array_response = compute_single_array_response_torch(params.bs_antenna,  az_t, el_t)
+
+       
+        gt_channel = generate_MIMO_channel_torch(array_response, power_linear, delay_secs, phase_t, default_dopplers, ofdm_params= params.ofdm, freq_domain=params.freq_domain )
+        # print("gt_channel", gt_channel[0])
+
+
+        ###############
+        delay_pred_secs = delay_pred/ 1e6
+        power_pred = power_pred.masked_fill(mask, 0)
+        power_linear_pred = 10**( (power_pred/0.01)/10)
+        power_linear_pred = power_linear_pred.masked_fill(mask, torch.nan)
+        default_dopplers = torch.zeros_like(power_linear_pred)
+       
+        phase_pred = torch.rad2deg(phase_pred)
+        array_response_pred = compute_single_array_response_torch(params.bs_antenna,  az_pred, el_pred)
+        pred_channel = generate_MIMO_channel_torch(array_response_pred, power_linear_pred, delay_pred_secs, phase_pred, default_dopplers, ofdm_params= params.ofdm, freq_domain=params.freq_domain )
+        
+        
+        gt_channel = gt_channel * 1e6
+        print("gt_channel",  gt_channel[0])
+        pred_channel = pred_channel * 1e6
+        print("pred_channel", pred_channel[0])
+        # print("pred_channel",  pred_channel[0])
+        channel_loss = ((gt_channel.real - pred_channel.real )**2).mean() + ((gt_channel.imag - pred_channel.imag )**2).mean()
+        channel_loss = channel_loss/ 1e3
+        # channel_loss =  1e6 * channel_loss
+        # print("channel_loss", channel_loss)
+        total_loss += channel_loss
+        # az_t = az_t.masked_fill(mask, 0)
+        # el_t = el_t.masked_fill(mask, 0)
+
+        # ch_loss = np.linalg.norm(channel_pred - gt_channel)**2
     # total_loss = (loss_delay + 
     #              + interaction_weight * loss_interaction)
      
     return (total_loss, loss_delay, loss_power, loss_phase, 
-        loss_az, loss_el, loss_path_length, loss_interaction)
+        loss_az, loss_el, loss_path_length, loss_interaction, channel_loss)
 
 
 def compute_stop_metrics(path_count, targets, pad_value=500):
@@ -155,8 +199,7 @@ def show_example(model, val_loader, sample_index=0, k=25, plot=True, pad_value =
 
     pred_paths, path_lengths_pred,inter_str_pred= generate_paths(model, prompts[sample_index])
 
-
-    pred = pred_paths[0]  # (T,3)
+    pred = pred_paths  # (T,3)
     gt = paths[sample_index][1:, :3]  # Extract only 3D components (T,3)
 
     valid = (gt[:,0] != pad_value)
@@ -173,8 +216,10 @@ def show_example(model, val_loader, sample_index=0, k=25, plot=True, pad_value =
     if plot:
         T = min(len(gt), len(pred))
         # print("len_path", len(pred), "actual = ", T)
+       
         pred = pred[:T]
         gt = gt[:T]
+        
 
         fig, axs = plt.subplots(3,1, figsize=(10,12))
 
@@ -400,6 +445,7 @@ class MyChannelComputer:
         
         # Compute array response product
         array_response_product = self._compute_array_response_product(aod_az, aod_el)
+        
         n_paths_to_gen = params.num_paths
         
         # Whether to enable the doppler shift per path in the channel
@@ -429,3 +475,85 @@ class MyChannelComputer:
         # self[c.CHANNEL_PARAM_NAME] = channel  # Cache the result
 
         return channel
+    
+
+
+
+
+
+def compute_single_array_response_torch(ant_params: Dict, theta: torch.Tensor, 
+                                        phi: torch.Tensor) -> torch.Tensor:
+        """PyTorch version of the single array response calculator."""
+        # Calculate kd (wavenumber * spacing)
+        kd = 2 * torch.pi * ant_params['spacing']
+        
+        # Determine device from input tensors
+        device = theta.device
+        
+        # Generate antenna indices
+        # Assuming PARAMSET_ANT_SHAPE is a key like 'ant_shape' returning (Mx, My)
+        ant_shape = ant_params[c.PARAMSET_ANT_SHAPE]
+        ant_ind = ant_indices_torch(ant_shape, device=device)
+       
+        return array_response_batch_torch(ant_ind=ant_ind, theta=theta, phi=phi, kd=kd)
+
+
+
+def ant_indices_torch(panel_size: Tuple[int, int], device="cuda") -> torch.Tensor:
+    """Generate antenna element indices for a rectangular panel in PyTorch."""
+    Mx, My = panel_size
+    # Create coordinate grid for y and z (assuming x is constant 0 for a planar array)
+    # Using torch.meshgrid for a cleaner implementation than tile/repeat
+    y_coords = torch.arange(Mx, device=device)
+    z_coords = torch.arange(My, device=device)
+    
+    # meshgrid creates the 2D panel structure
+    Y, Z = torch.meshgrid(y_coords, z_coords, indexing='ij')
+    X = torch.zeros_like(Y)
+    
+    # Flatten and stack to get (N, 3)
+    return torch.stack([X.flatten(), Y.flatten(), Z.flatten()], dim=1).float()
+
+def _array_response_phase_torch(theta: torch.Tensor, phi: torch.Tensor, kd: float) -> torch.Tensor:
+    """Calculate the phase components of the array response in PyTorch."""
+    # Ensure complex type for the imaginary unit multiplication
+    gamma_x = 1j * kd * torch.sin(theta) * torch.cos(phi)
+    gamma_y = 1j * kd * torch.sin(theta) * torch.sin(phi)
+    gamma_z = 1j * kd * torch.cos(theta)
+    
+    return torch.stack([gamma_x, gamma_y, gamma_z], dim=-1)
+
+def array_response_batch_torch(ant_ind: torch.Tensor, theta: torch.Tensor, phi: torch.Tensor, kd: float) -> torch.Tensor:
+    """Calculate vectorized array response vectors in PyTorch."""
+    batch_size, n_paths = theta.shape
+    n_ant = ant_ind.shape[0]
+    device = theta.device
+    
+    # 1. Handle NaNs with a mask
+    valid_mask = ~torch.isnan(theta) # [batch_size, n_paths]
+    
+    # 2. Compute phases for valid entries
+    # theta[valid_mask] flattens the tensor to (n_valid_paths,)
+    gamma = _array_response_phase_torch(theta[valid_mask], phi[valid_mask], kd) # [n_valid_paths, 3]
+    
+    # 3. Initialize complex output tensor
+    # Note: Use complex64 or complex128 depending on your precision needs
+    result = torch.zeros((batch_size, n_ant, n_paths), dtype=torch.complex64, device=device)
+    
+    # 4. Get indices of valid paths to map back later
+    # nonzero(as_tuple=True) is the PyTorch equivalent of np.nonzero
+    batch_idx, path_idx = torch.nonzero(valid_mask, as_tuple=True)
+    
+    # 5. Compute responses: exp(ant_ind @ gamma.T)
+    # Using torch.matmul for the matrix product
+    # result: [n_ant, n_valid_paths]
+    # print(ant_ind[0], gamma.T [0])
+    # valid_responses = torch.exp(torch.matmul(ant_ind, gamma.T))
+    # Cast ant_ind to match gamma's complex dtype
+    valid_responses = torch.exp(torch.matmul(ant_ind.to(gamma.dtype), gamma.T))
+    
+    # 6. Scatter valid responses back into the batch structure
+    # We transpose valid_responses to [n_valid_paths, n_ant] to fit the indexing
+    result[batch_idx, :, path_idx] = valid_responses.T
+    
+    return result

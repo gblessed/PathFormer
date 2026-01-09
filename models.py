@@ -200,14 +200,21 @@ class PathDecoder(nn.Module):
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=n_layers)
 
         # Output head: predict next (delay, power, phase_sin, phase_cos, is_stop)
-        # self.out = nn.Linear(hidden_dim, 8)
+        self.out_delay = nn.Sequential(
+                    nn.Linear(hidden_dim, 1),
+                    nn.Sigmoid(),
+                )
         
+        self.out_power = nn.Sequential(
+                    nn.Linear(hidden_dim, 1),
+                )
         self.out = nn.Sequential(
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.GELU(),
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.GELU(),
-                    nn.Linear(hidden_dim, 8)
+                    nn.Linear(hidden_dim, 6),
+                    nn.Tanh(),
                 )
         self.pathcount_head = nn.Sequential(
             nn.Linear(prefix_len * hidden_dim, hidden_dim),
@@ -292,16 +299,16 @@ class PathDecoder(nn.Module):
         # Predict next-step parameters
         out = self.out(h_paths)  # (B, T, 5)
 
-        delay_pred = out[:, :, 0]
-        power_pred = out[:, :, 1]
-        phase_sin_pred = out[:, :, 2]
-        phase_cos_pred = out[:, :, 3]
+        delay_pred = self.out_delay(h_paths)
+        power_pred = self.out_power(h_paths)
+        phase_sin_pred = out[:, :, 0]
+        phase_cos_pred = out[:, :, 1]
         phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)
 
-        az_sin_pred = out[:, :, 4]
-        az_cos_pred = out[:, :, 5]
-        el_sin_pred = out[:, :, 6]
-        el_cos_pred = out[:, :, 7]
+        az_sin_pred = out[:, :, 2]
+        az_cos_pred = out[:, :, 3]
+        el_sin_pred = out[:, :, 4]
+        el_cos_pred = out[:, :, 5]
 
         phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)
         az_pred = torch.atan2(az_sin_pred, az_cos_pred)
