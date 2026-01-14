@@ -46,7 +46,7 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 from dataset.dataloaders import MySeqDataLoader
 import wandb
 from utils.utils import *
-from models import PathDecoder, GPTPathDecoder
+from models import PathDecoder, GPTPathDecoder, GPTPathDecoderEnv
 # %%
 all_scenarios = os.listdir('deepmimo_scenarios')
 
@@ -61,15 +61,19 @@ config = {
     "PAD_VALUE": 500,
     "USE_WANDB": True,
     "LR":2e-5,
-    "epochs" : 40,
+    "epochs" : 50,
     "interaction_weight": 0.01,  # Weight for interaction loss
     # "experiment": "interacaction_power_only_dec_only",
 
     # "experiment": f"pre_train_all_scenarios_interaction_weight_0.01_better_scheduler",
     "experiment": f"enc_pre_train_all_scenarios_interaction_weight_0.01_better_scheduler",
-    "hidden_dim": 512,
-    "n_layers": 6,
-    "n_heads": 4,
+    # "hidden_dim": 512,
+    # "n_layers": 6,
+    # "n_heads": 4,
+    "hidden_dim": 768,
+    "n_layers": 8,
+    "n_heads": 8,
+
  
 }
 
@@ -79,7 +83,7 @@ config = {
 
 # add %%
 bad_scenarios = []
-for scenario in all_scenarios[:1]:
+for scenario in all_scenarios:
 
     
     try:
@@ -281,8 +285,8 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # model = PathDecoder().to(device)
-model = PathDecoder(hidden_dim=config["hidden_dim"], n_layers = config["n_layers"], n_heads=config["n_heads"]).to(device)
-
+# model = PathDecoder(hidden_dim=config["hidden_dim"], n_layers = config["n_layers"], n_heads=config["n_heads"]).to(device)
+model = GPTPathDecoderEnv(hidden_dim=config["hidden_dim"], n_layers = config["n_layers"], n_heads=config["n_heads"]).to(device)
 print("Total trainable parameters:", count_parameters(model))
 
 

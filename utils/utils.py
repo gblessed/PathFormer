@@ -59,7 +59,58 @@ def generate_paths(model, prompt, max_steps=25, stop_threshold=0.5):
             pathcounts, 
             torch.stack(outputs_inter_str, dim=1).squeeze(0).detach().cpu())  # (T, 4)
 
+def masked_loss_pre_train(delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
+                path_length_predict, interaction_logits, targets, path_length_targets,
+                interaction_targets, pad_value=500, interaction_weight=0.1):
+    """
+    Added interaction prediction loss as auxiliary task.
 
+    Args:
+        interaction_logits: (B, T, 4) - logits for [R, D, S, T]
+        interaction_targets: (B, T, 4) - binary labels, -1 for invalid
+        interaction_weight: weight for interaction loss
+    """
+    delay_t, power_t, phase_t = targets[:, :, 0], targets[:, :, 1], targets[:, :, 2]
+    sinp = torch.sin(phase_t)
+    cosp = torch.cos(phase_t)
+
+    # Mask for valid paths
+    mask = (delay_t != pad_value)
+
+    # Existing losses
+    loss_delay = ((delay_pred - delay_t)**2)[mask].mean()
+    loss_power = ((power_pred - power_t)**2)[mask].mean()
+    loss_sin = ((sin_pred - sinp)**2)[mask].mean()
+    loss_cos = ((cos_pred - cosp)**2)[mask].mean()
+    loss_phase = (loss_sin + loss_cos) / 2
+
+    loss_path_length = ((path_length_targets - path_length_predict)**2).mean() * 0.0
+
+    # NEW: Multi-label interaction loss
+    # Mask: valid interactions (not -1)
+    interaction_mask = (interaction_targets[:, :, 0] != -1)  # (B, T)
+
+    if interaction_mask.any():
+        # Binary cross-entropy for multi-label classification
+        valid_logits = interaction_logits[interaction_mask]  # (N, 4)
+        valid_targets = interaction_targets[interaction_mask]  # (N, 4)
+
+        loss_interaction = F.binary_cross_entropy_with_logits(
+            valid_logits,
+            valid_targets,
+            reduction='mean'
+        )
+    else:
+        loss_interaction = torch.tensor(0.0, device=delay_pred.device)
+
+    total_loss = (loss_delay + loss_power + loss_phase +
+                  loss_path_length + interaction_weight * loss_interaction)
+
+    # total_loss = (loss_delay +
+    #              + interaction_weight * loss_interaction)
+
+    return (total_loss, loss_delay, loss_power, loss_phase,
+            loss_path_length, loss_interaction)
 
 def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
                 az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred,el_pred,
@@ -92,6 +143,8 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
     mask = (delay_t != pad_value)
 
     # Existing losses
+
+
     loss_delay = ((delay_pred - delay_t)**2)[mask].mean()
     loss_power = ((power_pred - power_t)**2)[mask].mean()
     loss_sin = ((phase_sin_pred - sinp)**2)[mask].mean()
