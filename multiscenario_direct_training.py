@@ -33,8 +33,13 @@ from sklearn.metrics import mean_squared_error
 import numpy as np
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from models import PathDecoder
+from models import PathDecoder, GPTPathDecoder
+from dataset.dataloaders import PreTrainMySeqDataLoader
+from utils.utils import *
 
+from tqdm import tqdm
+import torch
+import numpy as np
 # %%
 scenario = 'city_89_nairobi_3p5'
 # scenario = 'city_0_newyork_3p5'
@@ -65,193 +70,193 @@ config = {
 
 
 # %%
-class MySeqDataLoader(torch.utils.data.Dataset):
+# class MySeqDataLoader(torch.utils.data.Dataset):
 
-    def __init__(self, scenario, tx_sets="all", seed=42, shuffle=False, pad_value=500, 
-                 train=True, split_by="users", train_ratio=0.8, sort_by="power"):
-        ### get length of dataset
-        self.dataset = scenario
-        self.Txs = 1
-        self.pad_value = pad_value
-        self.split_by = split_by
-        self.sort_by = sort_by
-        self.dataset_filtered = defaultdict(list)
-        self.total_length = 0
+#     def __init__(self, scenario, tx_sets="all", seed=42, shuffle=False, pad_value=500, 
+#                  train=True, split_by="users", train_ratio=0.8, sort_by="power"):
+#         ### get length of dataset
+#         self.dataset = scenario
+#         self.Txs = 1
+#         self.pad_value = pad_value
+#         self.split_by = split_by
+#         self.sort_by = sort_by
+#         self.dataset_filtered = defaultdict(list)
+#         self.total_length = 0
         
      
-        # if (type(self.dataset) != type([])) or hasattr(self.dataset, 'los'):
-        if isinstance(self.dataset.n_ue, int):
+#         # if (type(self.dataset) != type([])) or hasattr(self.dataset, 'los'):
+#         if isinstance(self.dataset.n_ue, int):
         
-            self.dataset = [self.dataset]
+#             self.dataset = [self.dataset]
         
-        if split_by == "Tx":
-            self.Txs = list(range(len(self.dataset)))
-            if train:
-                self.Txs = self.Txs[:int(train_ratio * len(self.Txs))]
-            else:
+#         if split_by == "Tx":
+#             self.Txs = list(range(len(self.dataset)))
+#             if train:
+#                 self.Txs = self.Txs[:int(train_ratio * len(self.Txs))]
+#             else:
 
-                self.Txs = self.Txs[int(train_ratio * len(self.Txs)):]
+#                 self.Txs = self.Txs[int(train_ratio * len(self.Txs)):]
 
-            for tx in self.Txs:
-                use_indices = self.dataset[tx].los != -1
-                n_ue = self.dataset[tx].n_ue
+#             for tx in self.Txs:
+#                 use_indices = self.dataset[tx].los != -1
+#                 n_ue = self.dataset[tx].n_ue
             
-                for k in self.dataset[tx]:
-                    if k not in ["txrx", "load_params", "name", "rt_params", "materials", "scene", "n_ue"]:
-                        if self.dataset[tx][k].shape[0] == n_ue:
-                            self.dataset_filtered[k].extend(self.dataset[tx][k][use_indices].tolist())
-                self.dataset_filtered["tx_pos"].extend(np.repeat(self.dataset[tx]["tx_pos"], n_ue, axis=0).tolist())
+#                 for k in self.dataset[tx]:
+#                     if k not in ["txrx", "load_params", "name", "rt_params", "materials", "scene", "n_ue"]:
+#                         if self.dataset[tx][k].shape[0] == n_ue:
+#                             self.dataset_filtered[k].extend(self.dataset[tx][k][use_indices].tolist())
+#                 self.dataset_filtered["tx_pos"].extend(np.repeat(self.dataset[tx]["tx_pos"], n_ue, axis=0).tolist())
 
-        elif split_by == "user":
+#         elif split_by == "user":
 
-            for tx in range(len(self.dataset)):
-                n_ue = self.dataset[tx].n_ue
+#             for tx in range(len(self.dataset)):
+#                 n_ue = self.dataset[tx].n_ue
             
 
-                # --- user-level splitting ---
-                indices = np.arange(n_ue)
-                np.random.seed(seed + tx)
-                np.random.shuffle(indices)
+#                 # --- user-level splitting ---
+#                 indices = np.arange(n_ue)
+#                 np.random.seed(seed + tx)
+#                 np.random.shuffle(indices)
 
-                split_idx = int(train_ratio * len(indices))
-                if train:
-                    indices = indices[:split_idx]
-                else:
-                    indices = indices[split_idx:]
+#                 split_idx = int(train_ratio * len(indices))
+#                 if train:
+#                     indices = indices[:split_idx]
+#                 else:
+#                     indices = indices[split_idx:]
 
-                use_indices = self.dataset[tx].los != -1
-                indices = [i for i in indices if use_indices[i]]
+#                 use_indices = self.dataset[tx].los != -1
+#                 indices = [i for i in indices if use_indices[i]]
 
-                # Collect data
-                for k in self.dataset[tx]:
-                    if k in ["txrx", "load_params", "name", "rt_params", "materials", "scene", "n_ue"]:
-                        continue
-                    if self.dataset[tx][k].shape[0] == n_ue:
-                        self.dataset_filtered[k].extend(self.dataset[tx][k][indices].tolist())
+#                 # Collect data
+#                 for k in self.dataset[tx]:
+#                     if k in ["txrx", "load_params", "name", "rt_params", "materials", "scene", "n_ue"]:
+#                         continue
+#                     if self.dataset[tx][k].shape[0] == n_ue:
+#                         self.dataset_filtered[k].extend(self.dataset[tx][k][indices].tolist())
 
-                # TX position duplicated for each UE sample
-                if np.array(self.dataset[tx]["tx_pos"]).ndim == 1:
-                    self.dataset_filtered["tx_pos"].extend(
-                        np.repeat(self.dataset[tx]["tx_pos"][np.newaxis, :], len(indices), axis=0).tolist()
-                    )
-                else:
-                    self.dataset_filtered["tx_pos"].extend(
-                        np.repeat(self.dataset[tx]["tx_pos"], len(indices), axis=0).tolist()
-                    )
+#                 # TX position duplicated for each UE sample
+#                 if np.array(self.dataset[tx]["tx_pos"]).ndim == 1:
+#                     self.dataset_filtered["tx_pos"].extend(
+#                         np.repeat(self.dataset[tx]["tx_pos"][np.newaxis, :], len(indices), axis=0).tolist()
+#                     )
+#                 else:
+#                     self.dataset_filtered["tx_pos"].extend(
+#                         np.repeat(self.dataset[tx]["tx_pos"], len(indices), axis=0).tolist()
+#                     )
 
         
-        self.seed = seed
-        self.total_length = len(self.dataset_filtered[list(self.dataset_filtered.keys())[0]])
+#         self.seed = seed
+#         self.total_length = len(self.dataset_filtered[list(self.dataset_filtered.keys())[0]])
 
-        # boundary = self.dataset[0]['rt_params']['raw_params']['studyarea']['boundary']['data']
-        # self.mins = np.array([boundary[0][0], boundary[0][1], 
-        #                      self.dataset[0]['rt_params']['raw_params']['studyarea']['boundary']['values']['zmin']]).astype(np.float32)
-        # self.maxs = np.array([boundary[2][0], boundary[2][1], 
-        #                      self.dataset[0]['rt_params']['raw_params']['studyarea']['boundary']['values']['zmax']]).astype(np.float32)
+#         # boundary = self.dataset[0]['rt_params']['raw_params']['studyarea']['boundary']['data']
+#         # self.mins = np.array([boundary[0][0], boundary[0][1], 
+#         #                      self.dataset[0]['rt_params']['raw_params']['studyarea']['boundary']['values']['zmin']]).astype(np.float32)
+#         # self.maxs = np.array([boundary[2][0], boundary[2][1], 
+#         #                      self.dataset[0]['rt_params']['raw_params']['studyarea']['boundary']['values']['zmax']]).astype(np.float32)
 
-    def decode_interaction_to_multilabel(self, inter_code):
-        """
-        Convert interaction code to multi-label vector [R, D, S, T]
-        Ignores repetitions: RRD -> RD, RR -> R
+#     def decode_interaction_to_multilabel(self, inter_code):
+#         """
+#         Convert interaction code to multi-label vector [R, D, S, T]
+#         Ignores repetitions: RRD -> RD, RR -> R
         
-        Returns:
-            np.array of shape (4,): binary indicators for [R, D, S, T]
-            Returns [-1, -1, -1, -1] for invalid/NaN codes
-        """
-        if np.isnan(inter_code):
-            return np.array([-1, -1, -1, -1], dtype=np.float32)
+#         Returns:
+#             np.array of shape (4,): binary indicators for [R, D, S, T]
+#             Returns [-1, -1, -1, -1] for invalid/NaN codes
+#         """
+#         if np.isnan(inter_code):
+#             return np.array([-1, -1, -1, -1], dtype=np.float32)
         
-        code_str = str(int(inter_code))
-        multi_label = np.zeros(4, dtype=np.float32)
+#         code_str = str(int(inter_code))
+#         multi_label = np.zeros(4, dtype=np.float32)
         
-        # Map: 1->R, 2->D, 3->S, 4->T
-        for digit in code_str:
-            if digit == '1':
-                multi_label[0] = 1  # R
-            elif digit == '2':
-                multi_label[1] = 1  # D
-            elif digit == '3':
-                multi_label[2] = 1  # S
-            elif digit == '4':
-                multi_label[3] = 1  # T
+#         # Map: 1->R, 2->D, 3->S, 4->T
+#         for digit in code_str:
+#             if digit == '1':
+#                 multi_label[0] = 1  # R
+#             elif digit == '2':
+#                 multi_label[1] = 1  # D
+#             elif digit == '3':
+#                 multi_label[2] = 1  # S
+#             elif digit == '4':
+#                 multi_label[3] = 1  # T
         
-        return multi_label
+#         return multi_label
 
-    def __getitem__(self, idx):
-        prompt = []
-        for k in ["tx_pos", "rx_pos"]:
+#     def __getitem__(self, idx):
+#         prompt = []
+#         for k in ["tx_pos", "rx_pos"]:
 
-            prompt.extend(self.dataset_filtered[k][idx])
+#             prompt.extend(self.dataset_filtered[k][idx])
         
-        # Sort paths based on sort_by option
-        if self.sort_by == "power":
-            indices = np.argsort(-np.array(self.dataset_filtered["power"][idx]))
-        elif self.sort_by == "delay":
-            indices = np.argsort(np.array(self.dataset_filtered["delay"][idx]))
-        else:
-            raise ValueError(f"Unknown sort_by option: {self.sort_by}")
+#         # Sort paths based on sort_by option
+#         if self.sort_by == "power":
+#             indices = np.argsort(-np.array(self.dataset_filtered["power"][idx]))
+#         elif self.sort_by == "delay":
+#             indices = np.argsort(np.array(self.dataset_filtered["delay"][idx]))
+#         else:
+#             raise ValueError(f"Unknown sort_by option: {self.sort_by}")
 
-        paths = []
-        interactions = []  # NEW: multi-label interactions
-        valid_paths = 0
+#         paths = []
+#         interactions = []  # NEW: multi-label interactions
+#         valid_paths = 0
         
-        # SOS token
-        paths.append([0.0, 0.0, 0.0])
-        interactions.append([-1, -1, -1, -1])  # SOS has no interaction label
+#         # SOS token
+#         paths.append([0.0, 0.0, 0.0])
+#         interactions.append([-1, -1, -1, -1])  # SOS has no interaction label
         
-        for step_idx, indx in enumerate(indices):
-            output_per_step = []
-            broken = False
+#         for step_idx, indx in enumerate(indices):
+#             output_per_step = []
+#             broken = False
             
-            for k in ["delay", "power", "phase"]:
-                value = self.dataset_filtered[k][idx][indx]
-                if np.isnan(value):
-                    value = self.pad_value
-                    broken = True
-                    break
-                elif k == "delay":
-                    value = value * 1e6  # convert to us
-                elif k == "phase":
-                    value = value * (np.pi/180)
-                elif k == "power":
-                    value = value * 0.01
+#             for k in ["delay", "power", "phase"]:
+#                 value = self.dataset_filtered[k][idx][indx]
+#                 if np.isnan(value):
+#                     value = self.pad_value
+#                     broken = True
+#                     break
+#                 elif k == "delay":
+#                     value = value * 1e6  # convert to us
+#                 elif k == "phase":
+#                     value = value * (np.pi/180)
+#                 elif k == "power":
+#                     value = value * 0.01
                 
-                output_per_step.append(value)
+#                 output_per_step.append(value)
             
-            if not broken:
-                valid_paths += 1
-                paths.append(output_per_step)
+#             if not broken:
+#                 valid_paths += 1
+#                 paths.append(output_per_step)
                 
-                # NEW: Extract and decode interaction
-                inter_value = self.dataset_filtered["inter"][idx][indx]
-                inter_label = self.decode_interaction_to_multilabel(inter_value)
-                interactions.append(inter_label)
+#                 # NEW: Extract and decode interaction
+#                 inter_value = self.dataset_filtered["inter"][idx][indx]
+#                 inter_label = self.decode_interaction_to_multilabel(inter_value)
+#                 interactions.append(inter_label)
         
-        num_paths = [valid_paths]
+#         num_paths = [valid_paths]
         
-        return (torch.tensor(prompt, dtype=torch.float32), 
-                torch.tensor(paths, dtype=torch.float32), 
-                torch.tensor(num_paths, dtype=torch.float32) / 25.0,
-                torch.tensor(interactions, dtype=torch.float32))  # NEW
+#         return (torch.tensor(prompt, dtype=torch.float32), 
+#                 torch.tensor(paths, dtype=torch.float32), 
+#                 torch.tensor(num_paths, dtype=torch.float32) / 25.0,
+#                 torch.tensor(interactions, dtype=torch.float32))  # NEW
 
-    def __len__(self):
-        return self.total_length
+#     def __len__(self):
+#         return self.total_length
 
-    def collate_fn(self, batch):
-        batch_prompts = torch.cat([i[0].unsqueeze(0) for i in batch], dim=0)
-        batch_paths = [i[1] for i in batch]
-        batch_paths = torch.nn.utils.rnn.pad_sequence(batch_paths, batch_first=True, 
-                                                       padding_value=self.pad_value)
-        batch_num_paths = [i[2] for i in batch]
-        batch_num_paths = torch.nn.utils.rnn.pad_sequence(batch_num_paths, batch_first=True, 
-                                                           padding_value=0)
+#     def collate_fn(self, batch):
+#         batch_prompts = torch.cat([i[0].unsqueeze(0) for i in batch], dim=0)
+#         batch_paths = [i[1] for i in batch]
+#         batch_paths = torch.nn.utils.rnn.pad_sequence(batch_paths, batch_first=True, 
+#                                                        padding_value=self.pad_value)
+#         batch_num_paths = [i[2] for i in batch]
+#         batch_num_paths = torch.nn.utils.rnn.pad_sequence(batch_num_paths, batch_first=True, 
+#                                                            padding_value=0)
         
-        # NEW: collate interactions
-        batch_interactions = [i[3] for i in batch]
-        batch_interactions = torch.nn.utils.rnn.pad_sequence(batch_interactions, batch_first=True,
-                                                             padding_value=-1)
+#         # NEW: collate interactions
+#         batch_interactions = [i[3] for i in batch]
+#         batch_interactions = torch.nn.utils.rnn.pad_sequence(batch_interactions, batch_first=True,
+#                                                              padding_value=-1)
         
-        return batch_prompts, batch_paths, batch_num_paths, batch_interactions
+#         return batch_prompts, batch_paths, batch_num_paths, batch_interactions
 
 
 
@@ -261,7 +266,7 @@ class MySeqDataLoader(torch.utils.data.Dataset):
 
 
 # %%
-train_data  = MySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
+train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
 
 train_loader = torch.utils.data.DataLoader(
     dataset     = train_data,
@@ -269,7 +274,7 @@ train_loader = torch.utils.data.DataLoader(
     shuffle     = True,
     collate_fn= train_data.collate_fn
     )
-val_data  = MySeqDataLoader(dataset, train=False, split_by="user", sort_by="power")
+val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power")
 val_loader = torch.utils.data.DataLoader(
     dataset     = val_data,
     batch_size  = config['BATCH_SIZE'],
@@ -334,203 +339,203 @@ print("Val Batches          : ", val_loader.__len__())
 
 # %%
 
-class GPTBlock(nn.Module):
-    def __init__(self, dim, n_heads, ff_dim):
-        super().__init__()
-        self.attn = nn.MultiheadAttention(
-            embed_dim=dim, 
-            num_heads=n_heads,
-            dropout=0.1,
-            batch_first=True
-        )
-        self.ln1 = nn.LayerNorm(dim)
+# class GPTBlock(nn.Module):
+#     def __init__(self, dim, n_heads, ff_dim):
+#         super().__init__()
+#         self.attn = nn.MultiheadAttention(
+#             embed_dim=dim, 
+#             num_heads=n_heads,
+#             dropout=0.1,
+#             batch_first=True
+#         )
+#         self.ln1 = nn.LayerNorm(dim)
 
-        self.ff = nn.Sequential(
-            nn.Linear(dim, ff_dim),
-            nn.GELU(),
-            nn.Linear(ff_dim, dim)
-        )
-        self.ln2 = nn.LayerNorm(dim)
+#         self.ff = nn.Sequential(
+#             nn.Linear(dim, ff_dim),
+#             nn.GELU(),
+#             nn.Linear(ff_dim, dim)
+#         )
+#         self.ln2 = nn.LayerNorm(dim)
 
-    def forward(self, x, causal_mask):
-        attn_out, _ = self.attn(x, x, x, attn_mask=causal_mask)
-        x = x + attn_out
-        x = self.ln1(x)
+#     def forward(self, x, causal_mask):
+#         attn_out, _ = self.attn(x, x, x, attn_mask=causal_mask)
+#         x = x + attn_out
+#         x = self.ln1(x)
 
-        ff_out = self.ff(x)
-        x = x + ff_out
-        x = self.ln2(x)
+#         ff_out = self.ff(x)
+#         x = x + ff_out
+#         x = self.ln2(x)
 
-        return x
+#         return x
 
 
-class GPTPathDecoder(nn.Module):
-    def __init__(
-        self,
-        prompt_dim=6,
-        hidden_dim=512,
-        n_layers=6,
-        n_heads=4,
-        prefix_len=4,
-        max_T=26,
-        pad_value=500
-    ):
-        super().__init__()
-        self.pad_value = pad_value
-        self.hidden_dim = hidden_dim
-        self.prefix_len = prefix_len
-        self.max_T = max_T
+# class GPTPathDecoder(nn.Module):
+#     def __init__(
+#         self,
+#         prompt_dim=6,
+#         hidden_dim=512,
+#         n_layers=6,
+#         n_heads=4,
+#         prefix_len=4,
+#         max_T=26,
+#         pad_value=500
+#     ):
+#         super().__init__()
+#         self.pad_value = pad_value
+#         self.hidden_dim = hidden_dim
+#         self.prefix_len = prefix_len
+#         self.max_T = max_T
 
-        # Path token embedding
-        self.path_in = nn.Linear(8, hidden_dim)
+#         # Path token embedding
+#         self.path_in = nn.Linear(8, hidden_dim)
 
-        self.pos_emb = nn.Embedding(max_T + prefix_len, hidden_dim)
+#         self.pos_emb = nn.Embedding(max_T + prefix_len, hidden_dim)
 
-        # Convert prompt → prefix tokens
-        self.prompt_to_prefix = nn.Linear(prompt_dim, prefix_len * hidden_dim)
+#         # Convert prompt → prefix tokens
+#         self.prompt_to_prefix = nn.Linear(prompt_dim, prefix_len * hidden_dim)
 
-        # GPT layers
-        self.layers = nn.ModuleList([
-            GPTBlock(dim=hidden_dim, n_heads=n_heads, ff_dim=4 * hidden_dim)
-            for _ in range(n_layers)
-        ])
+#         # GPT layers
+#         self.layers = nn.ModuleList([
+#             GPTBlock(dim=hidden_dim, n_heads=n_heads, ff_dim=4 * hidden_dim)
+#             for _ in range(n_layers)
+#         ])
 
-        # Output heads
-        self.out = nn.Linear(hidden_dim, 4)  # delay, power, sin(phase), cos(phase)
+#         # Output heads
+#         self.out = nn.Linear(hidden_dim, 4)  # delay, power, sin(phase), cos(phase)
         
-        # NEW: Multi-label interaction head (4 outputs: R, D, S, T)
-        self.interaction_head = nn.Linear(hidden_dim, 4)
+#         # NEW: Multi-label interaction head (4 outputs: R, D, S, T)
+#         self.interaction_head = nn.Linear(hidden_dim, 4)
         
-        # Path count head
-        self.pathcount_head = nn.Sequential(
-            nn.Linear(prefix_len * hidden_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, 1)
-        )
+#         # Path count head
+#         self.pathcount_head = nn.Sequential(
+#             nn.Linear(prefix_len * hidden_dim, hidden_dim),
+#             nn.GELU(),
+#             nn.Linear(hidden_dim, 1)
+#         )
 
-    def forward(self, prompts, paths, interactions):
-        """
-        prompts: (B, prompt_dim)
-        paths: (B, T, 4)
-        interactions: (B,T,4)
-        Returns:
-            delay_pred, power_pred, phase_sin_pred, phase_cos_pred, 
-            phase_pred, pathcounts, interaction_logits
-        """
-        B, T, _ = paths.shape
+#     def forward(self, prompts, paths, interactions):
+#         """
+#         prompts: (B, prompt_dim)
+#         paths: (B, T, 4)
+#         interactions: (B,T,4)
+#         Returns:
+#             delay_pred, power_pred, phase_sin_pred, phase_cos_pred, 
+#             phase_pred, pathcounts, interaction_logits
+#         """
+#         B, T, _ = paths.shape
 
-        phase = paths[:, :, 2]
-        sinp = torch.sin(phase)
-        cosp = torch.cos(phase)
+#         phase = paths[:, :, 2]
+#         sinp = torch.sin(phase)
+#         cosp = torch.cos(phase)
         
-        # Convert prompt → prefix tokens
-        prefix_raw = self.prompt_to_prefix(prompts)
-        prefix = prefix_raw.view(B, self.prefix_len, self.hidden_dim)
+#         # Convert prompt → prefix tokens
+#         prefix_raw = self.prompt_to_prefix(prompts)
+#         prefix = prefix_raw.view(B, self.prefix_len, self.hidden_dim)
 
-        # Embed path tokens
-        paths_expanded = torch.stack([paths[:, :, 0], paths[:, :, 1], sinp, cosp], dim=-1)
+#         # Embed path tokens
+#         paths_expanded = torch.stack([paths[:, :, 0], paths[:, :, 1], sinp, cosp], dim=-1)
         
 
-        interactions_clean = interactions.clone()
-        interactions_clean[interactions_clean == -1] = 0
+#         interactions_clean = interactions.clone()
+#         interactions_clean[interactions_clean == -1] = 0
     
-        combined = torch.cat([paths_expanded, interactions_clean], dim=-1)
-        x = self.path_in(combined)
-        # Concatenate prefix + tokens
-        full_seq = torch.cat([prefix, x], dim=1)
+#         combined = torch.cat([paths_expanded, interactions_clean], dim=-1)
+#         x = self.path_in(combined)
+#         # Concatenate prefix + tokens
+#         full_seq = torch.cat([prefix, x], dim=1)
 
-        # Positional embeddings
-        pos = self.pos_emb(torch.arange(self.prefix_len + T, device=x.device))
-        full_seq = full_seq + pos
+#         # Positional embeddings
+#         pos = self.pos_emb(torch.arange(self.prefix_len + T, device=x.device))
+#         full_seq = full_seq + pos
 
-        # Causal mask
-        total_len = self.prefix_len + T
-        causal_mask = torch.triu(
-            torch.ones(total_len, total_len, device=x.device), 1
-        ).bool()
+#         # Causal mask
+#         total_len = self.prefix_len + T
+#         causal_mask = torch.triu(
+#             torch.ones(total_len, total_len, device=x.device), 1
+#         ).bool()
 
-        # Pass through GPT layers
-        h = full_seq
-        for layer in self.layers:
-            h = layer(h, causal_mask)
+#         # Pass through GPT layers
+#         h = full_seq
+#         for layer in self.layers:
+#             h = layer(h, causal_mask)
 
-        # Path predictions
-        h_paths = h[:, self.prefix_len:, :]
+#         # Path predictions
+#         h_paths = h[:, self.prefix_len:, :]
 
-        # Path parameters
-        out = self.out(h_paths)
-        delay_pred = out[:, :, 0]
-        power_pred = out[:, :, 1]
-        phase_sin_pred = out[:, :, 2]
-        phase_cos_pred = out[:, :, 3]
-        phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)
+#         # Path parameters
+#         out = self.out(h_paths)
+#         delay_pred = out[:, :, 0]
+#         power_pred = out[:, :, 1]
+#         phase_sin_pred = out[:, :, 2]
+#         phase_cos_pred = out[:, :, 3]
+#         phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)
         
-        # NEW: Interaction predictions (multi-label logits)
-        interaction_logits = self.interaction_head(h_paths)  # (B, T, 4)
+#         # NEW: Interaction predictions (multi-label logits)
+#         interaction_logits = self.interaction_head(h_paths)  # (B, T, 4)
         
-        # Path count head
-        prefix_flat = prefix.reshape(B, -1)
-        pathcounts = self.pathcount_head(prefix_flat)
+#         # Path count head
+#         prefix_flat = prefix.reshape(B, -1)
+#         pathcounts = self.pathcount_head(prefix_flat)
 
-        return (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, 
-                phase_pred, pathcounts, interaction_logits)
+#         return (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, 
+#                 phase_pred, pathcounts, interaction_logits)
 
 # %%
 
 
 
-def masked_loss(delay_pred, power_pred, sin_pred, cos_pred, phase_pred, 
-                path_length_predict, interaction_logits, targets, path_length_targets,
-                interaction_targets, pad_value=500, interaction_weight=0.1):
-    """
-    Added interaction prediction loss as auxiliary task.
+# def masked_loss(delay_pred, power_pred, sin_pred, cos_pred, phase_pred, 
+#                 path_length_predict, interaction_logits, targets, path_length_targets,
+#                 interaction_targets, pad_value=500, interaction_weight=0.1):
+#     """
+#     Added interaction prediction loss as auxiliary task.
     
-    Args:
-        interaction_logits: (B, T, 4) - logits for [R, D, S, T]
-        interaction_targets: (B, T, 4) - binary labels, -1 for invalid
-        interaction_weight: weight for interaction loss
-    """
-    delay_t, power_t, phase_t = targets[:, :, 0], targets[:, :, 1], targets[:, :, 2]
-    sinp = torch.sin(phase_t)
-    cosp = torch.cos(phase_t)
+#     Args:
+#         interaction_logits: (B, T, 4) - logits for [R, D, S, T]
+#         interaction_targets: (B, T, 4) - binary labels, -1 for invalid
+#         interaction_weight: weight for interaction loss
+#     """
+#     delay_t, power_t, phase_t = targets[:, :, 0], targets[:, :, 1], targets[:, :, 2]
+#     sinp = torch.sin(phase_t)
+#     cosp = torch.cos(phase_t)
     
-    # Mask for valid paths
-    mask = (delay_t != pad_value)
+#     # Mask for valid paths
+#     mask = (delay_t != pad_value)
 
-    # Existing losses
-    loss_delay = ((delay_pred - delay_t)**2)[mask].mean()
-    loss_power = ((power_pred - power_t)**2)[mask].mean()
-    loss_sin = ((sin_pred - sinp)**2)[mask].mean()
-    loss_cos = ((cos_pred - cosp)**2)[mask].mean()
-    loss_phase = (loss_sin + loss_cos) / 2
+#     # Existing losses
+#     loss_delay = ((delay_pred - delay_t)**2)[mask].mean()
+#     loss_power = ((power_pred - power_t)**2)[mask].mean()
+#     loss_sin = ((sin_pred - sinp)**2)[mask].mean()
+#     loss_cos = ((cos_pred - cosp)**2)[mask].mean()
+#     loss_phase = (loss_sin + loss_cos) / 2
 
-    loss_path_length = ((path_length_targets - path_length_predict)**2).mean() #* 0.0
+#     loss_path_length = ((path_length_targets - path_length_predict)**2).mean() #* 0.0
     
-    # NEW: Multi-label interaction loss
-    # Mask: valid interactions (not -1)
-    interaction_mask = (interaction_targets[:, :, 0] != -1)  # (B, T)
+#     # NEW: Multi-label interaction loss
+#     # Mask: valid interactions (not -1)
+#     interaction_mask = (interaction_targets[:, :, 0] != -1)  # (B, T)
     
-    if interaction_mask.any():
-        # Binary cross-entropy for multi-label classification
-        valid_logits = interaction_logits[interaction_mask]  # (N, 4)
-        valid_targets = interaction_targets[interaction_mask]  # (N, 4)
+#     if interaction_mask.any():
+#         # Binary cross-entropy for multi-label classification
+#         valid_logits = interaction_logits[interaction_mask]  # (N, 4)
+#         valid_targets = interaction_targets[interaction_mask]  # (N, 4)
         
-        loss_interaction = F.binary_cross_entropy_with_logits(
-            valid_logits,
-            valid_targets,
-            reduction='mean'
-        )
-    else:
-        loss_interaction = torch.tensor(0.0, device=delay_pred.device)
+#         loss_interaction = F.binary_cross_entropy_with_logits(
+#             valid_logits,
+#             valid_targets,
+#             reduction='mean'
+#         )
+#     else:
+#         loss_interaction = torch.tensor(0.0, device=delay_pred.device)
     
-    total_loss = (loss_delay + loss_power + loss_phase + 
-                  loss_path_length + interaction_weight * loss_interaction)
+#     total_loss = (loss_delay + loss_power + loss_phase + 
+#                   loss_path_length + interaction_weight * loss_interaction)
 
-    # total_loss = (loss_delay + 
-    #              + interaction_weight * loss_interaction)
+#     # total_loss = (loss_delay + 
+#     #              + interaction_weight * loss_interaction)
      
-    return (total_loss, loss_delay, loss_power, loss_phase, 
-            loss_path_length, loss_interaction)
+#     return (total_loss, loss_delay, loss_power, loss_phase, 
+#             loss_path_length, loss_interaction)
 
 def compute_stop_metrics(path_count, targets, pad_value=500):
     """
@@ -544,9 +549,6 @@ def compute_stop_metrics(path_count, targets, pad_value=500):
     return rmse 
 
 
-from tqdm import tqdm
-import torch
-import numpy as np
 
 def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
     model.eval()
@@ -767,7 +769,8 @@ def evaluate_generation(val_loader, n_samples=3):
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-def train_with_interactions(model, train_loader, val_loader, config, train_data):
+
+def train_with_interactions(model, train_loader, val_loader, config, train_data, task=None):
     """
     Modified training loop with interaction prediction.
     """
@@ -779,15 +782,17 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data)
         # -------------------- TRAINING --------------------
         model.train()
         train_losses = []
-        train_loss_delay =  []
+        train_loss_delay = []
         train_loss_power = []
         train_loss_phase = []
         train_loss_path_length = []
         train_loss_interaction = []  # NEW
         train_path_length_rmse = []
-
+        train_loss_az = []
+        train_loss_el = []
+        train_ch_nmse = []
         pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False)
-        for prompts, paths, path_lengths, interactions in pbar:  # NEW: added interactions
+        for prompts, paths, path_lengths, interactions, env, env_prop in pbar:  # NEW: added interactions
             prompts = prompts.cuda()
             paths = paths.cuda()
             path_lengths = path_lengths.cuda()
@@ -799,39 +804,71 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data)
             paths_out = paths[:, 1:, :]
             interactions_out = interactions[:, 1:, :]  # NEW: shift targets
 
-            (delay_pred, power_pred, sin_pred, cos_pred, phase_pred, 
+            (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+             az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
              path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
-            
-            (total_loss, loss_delay, loss_power, loss_phase, 
-             loss_path_length, loss_interaction) = masked_loss(
-                delay_pred, power_pred, sin_pred, cos_pred, phase_pred, 
+
+            (total_loss, loss_delay, loss_power, loss_phase,
+             loss_az, loss_el, loss_path_length, loss_interaction,loss_channel) = masked_loss(
+                delay_pred, power_pred, phase_sin_pred, phase_cos_pred,phase_pred,
+                az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred,el_pred,
                 path_length_pred, interaction_logits, paths_out, path_lengths,
-                interactions_out, pad_value=train_data.pad_value,
+                interactions_out, finetune=task, pad_value=train_data.pad_value,
                 interaction_weight=config.get("interaction_weight", 0.1)
             )
-
             optimizer.zero_grad()
             total_loss.backward()
             optimizer.step()
             scheduler.step()
             path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1), 
                                                     path_lengths)
+            ch_nmse = 0
+            if epoch >= 0:
+                pass
+                # pred_power_linear = 10**( ((power_pred.cpu().detach().numpy())/0.01)/10)
+                # pred_delay_secs = delay_pred.cpu().detach().numpy()/ 1e6
 
+
+                # delay_t = paths_out[:, :, 0].cpu().detach().numpy()
+                # power_t = paths_out[:, :, 1].cpu().detach().numpy()
+                # phase = paths_out[:, :, 2].cpu().detach().numpy()
+                # az = paths_out[:, :, 3].cpu().detach().numpy()
+                # el = paths_out[:, :, 4].cpu().detach().numpy()
+                # power_linear = 10**( (power_t/0.01)/10)
+                # delay_secs = delay_t/ 1e6
+
+                # predicted_channels = mycomputer.compute_channels(pred_power_linear,pred_delay_secs, phase_pred.cpu().detach().numpy(), az_pred.cpu().detach().numpy(), el_pred.cpu().detach().numpy(),kwargs=None  )
+                # gt_channels = mycomputer.compute_channels(power_linear,delay_secs, phase, az, el ,kwargs=None )
+   
+
+
+                # ch_nmse = compute_channel_nmse(predicted_channels, gt_channels)
+            train_ch_nmse.append(ch_nmse)
             train_losses.append(total_loss.item())
             train_loss_delay.append(loss_delay.item())
             train_loss_power.append(loss_power.item())
             train_loss_phase.append(loss_phase.item())
             train_loss_path_length.append(loss_path_length.item())
+            # track aoa losses
+            # if 'train_loss_az' not in locals():
+            #     train_loss_az = []
+            #     train_loss_el = []
+            train_loss_az.append(loss_az.item())
+            train_loss_el.append(loss_el.item())
             train_loss_interaction.append(loss_interaction.item())  # NEW
             train_path_length_rmse.append(path_length_rmse)
             current_lr = optimizer.param_groups[0]["lr"]
             pbar.set_postfix({
                 "loss": f"{total_loss.item():.4f}",
                 "delay": f"{loss_delay.item():.4f}",
+                
                 "power": f"{loss_power.item():.4f}",
                 "phase": f"{loss_phase.item():.4f}",
+                "az": f"{loss_az.item():.4f}",
+                "el": f"{loss_el.item():.4f}",
                 "inter": f"{loss_interaction.item():.4f}",  # NEW
                 "path_rmse": f"{path_length_rmse:.4f}",
+                "ch_nmse":f"{ch_nmse:.4f}",
                 "lr": f"{current_lr:.2e}"
             })
 
@@ -839,6 +876,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data)
         avg_train_delay = np.mean(train_loss_delay)
         avg_train_power = np.mean(train_loss_power)
         avg_train_phase = np.mean(train_loss_phase)
+        avg_train_az = np.mean(train_loss_az) 
+        avg_train_el = np.mean(train_loss_el)
         avg_train_path_length = np.mean(train_loss_path_length)
         avg_train_interaction = np.mean(train_loss_interaction)  # NEW
         avg_train_path_length_rmse = np.mean(train_path_length_rmse)
@@ -852,29 +891,35 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data)
         val_loss_path_length = []
         val_loss_interaction = []  # NEW
         val_path_length_rmse = []
+        val_loss_az = []
+        val_loss_el = []
 
         with torch.no_grad():
             pbar = tqdm(val_loader, desc=f"Epoch {epoch} [Val]", leave=False)
-            for prompts, paths, path_lengths, interactions in pbar:  # NEW
+            # prepare val aoa loss lists
+
+            for prompts, paths, path_lengths, interactions, env, env_prop in pbar:  # NEW
                 prompts = prompts.cuda()
                 paths = paths.cuda()
                 path_lengths = path_lengths.cuda()
                 interactions = interactions.cuda()  # NEW
-                
+
                 paths_in = paths[:, :-1, :]
                 interactions_in = interactions[:, :-1, :]
 
                 paths_out = paths[:, 1:, :]
                 interactions_out = interactions[:, 1:, :]  # NEW: shift targets
 
-                (delay_pred, power_pred, sin_pred, cos_pred, phase_pred, 
-                 path_length_pred, interaction_logits) = model(prompts, paths_in,interactions_in)
+                (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                 az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                 path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
                 
-                (total_loss, loss_delay, loss_power, loss_phase, 
-                 loss_path_length, loss_interaction) = masked_loss(
-                    delay_pred, power_pred, sin_pred, cos_pred, phase_pred, 
+                (total_loss, loss_delay, loss_power, loss_phase,
+                loss_az, loss_el, loss_path_length, loss_interaction,loss_channel) = masked_loss(
+                    delay_pred, power_pred, phase_sin_pred, phase_cos_pred,phase_pred,
+                    az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred,el_pred,
                     path_length_pred, interaction_logits, paths_out, path_lengths,
-                    interactions_out, pad_value=train_data.pad_value,
+                    interactions_out, finetune=task, pad_value=train_data.pad_value,
                     interaction_weight=config.get("interaction_weight", 0.1)
                 )
 
@@ -885,20 +930,23 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data)
                 val_loss_delay.append(loss_delay.item())
                 val_loss_power.append(loss_power.item())
                 val_loss_phase.append(loss_phase.item())
+                val_loss_az.append(loss_az.item())
+                val_loss_el.append(loss_el.item())
                 val_loss_path_length.append(loss_path_length.item())
                 val_loss_interaction.append(loss_interaction.item())  # NEW
                 val_path_length_rmse.append(path_length_rmse)
-               
+
                 pbar.set_postfix({
                     "val_loss": f"{total_loss.item():.4f}",
                     "inter": f"{loss_interaction.item():.4f}",  # NEW
-                    
                 })
 
         avg_val_loss = np.mean(val_losses)
         avg_val_delay = np.mean(val_loss_delay)
         avg_val_power = np.mean(val_loss_power)
         avg_val_phase = np.mean(val_loss_phase)
+        avg_val_az = np.mean(val_loss_az) 
+        avg_val_el = np.mean(val_loss_el)
         avg_val_path_length = np.mean(val_loss_path_length)
         avg_val_interaction = np.mean(val_loss_interaction)  # NEW
         avg_val_path_length_rmse = np.mean(val_path_length_rmse)
@@ -925,13 +973,18 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data)
                 "train_loss_delay": avg_train_delay,
                 "train_loss_power": avg_train_power,
                 "train_loss_phase": avg_train_phase,
+                "train_loss_az": avg_train_az,
+                "train_loss_el": avg_train_el,
                 "train_loss_path_length": avg_train_path_length,
                 "train_loss_interaction": avg_train_interaction,  # NEW
                 "train_path_length_rmse": avg_train_path_length_rmse,
+
                 "val_loss": avg_val_loss,
                 "val_loss_delay": avg_val_delay,
                 "val_loss_power": avg_val_power,
                 "val_loss_phase": avg_val_phase,
+                "val_loss_az": avg_val_az,
+                "val_loss_el": avg_val_el,
                 "val_loss_path_length": avg_val_path_length,
                 "val_loss_interaction": avg_val_interaction,  # NEW
                 "val_path_length_rmse": avg_val_path_length_rmse,
@@ -944,6 +997,9 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data)
         print(f"    Delay: {avg_train_delay:.4f} (val: {avg_val_delay:.4f})")
         print(f"    Power: {avg_train_power:.4f} (val: {avg_val_power:.4f})")
         print(f"    Phase: {avg_train_phase:.4f} (val: {avg_val_phase:.4f})")
+        print(f"    Az: {avg_train_az:.4f} (val: {avg_val_az:.4f})")
+        print(f"    El: {avg_train_el:.4f} (val: {avg_val_el:.4f})")
+
         print(f"    Interaction: {avg_train_interaction:.4f} (val: {avg_val_interaction:.4f})")  # NEW
         print(f"    PathLength: {avg_train_path_length:.4f} (val: {avg_val_path_length:.4f})")  # NEW
 
@@ -977,7 +1033,7 @@ all_scenarios = ['city_47_chicago_3p5', 'city_23_beijing_3p5', 'city_91_xiangyan
 for scenario in all_scenarios:
 # %%
     # model = GPTPathDecoder().to(device)
-    model = GPTPathDecoder().to(device)
+    model = PathDecoder().to(device)
 
     print("Total trainable parameters:", count_parameters(model))
     dataset = dm.load(scenario, )
@@ -1008,7 +1064,7 @@ for scenario in all_scenarios:
     checkpoint_path = f"{config['experiment']}_best_model_checkpoint.pth"
     os.makedirs("checkpoints2", exist_ok=True)
     checkpoint_path = os.path.join("checkpoints2", checkpoint_path)
-    train_data  = MySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
+    train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
 
     train_loader = torch.utils.data.DataLoader(
         dataset     = train_data,
@@ -1016,7 +1072,7 @@ for scenario in all_scenarios:
         shuffle     = True,
         collate_fn= train_data.collate_fn
         )
-    val_data  = MySeqDataLoader(dataset, train=False, split_by="user", sort_by="power")
+    val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power")
     val_loader = torch.utils.data.DataLoader(
         dataset     = val_data,
         batch_size  = config['BATCH_SIZE'],

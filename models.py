@@ -587,8 +587,8 @@ class PathDecoder(nn.Module):
         # Predict next-step parameters
         out = self.out(h_paths)  # (B, T, 5)
 
-        delay_pred = self.out_delay(h_paths)
-        power_pred = self.out_power(h_paths)
+        delay_pred = self.out_delay(h_paths).squeeze(-1)
+        power_pred = self.out_power(h_paths).squeeze(-1)
         phase_sin_pred = out[:, :, 0]
         phase_cos_pred = out[:, :, 1]
         phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)

@@ -59,14 +59,14 @@ random.shuffle(all_scenarios)
 config = {
     "BATCH_SIZE":128,
     "PAD_VALUE": 500,
-    "USE_WANDB": False,
+    "USE_WANDB": True,
     "LR":2e-5,
     "epochs" : 50,
     "interaction_weight": 0.01,  # Weight for interaction loss
     # "experiment": "interacaction_power_only_dec_only",
 
     # "experiment": f"pre_train_all_scenarios_interaction_weight_0.01_better_scheduler",
-    "experiment": f"enc_pre_mixed_train_all_scenarios_interaction_weight_0.01_better_scheduler",
+    "experiment": f"true_enc_pre_mixed_train_all_scenarios_interaction_weight_0.01_better_scheduler",
     # "hidden_dim": 512,
     # "n_layers": 6,
     # "n_heads": 4,
@@ -326,10 +326,10 @@ def train_with_interactions(model, config, task = None):
     """
     # Create mixed dataloaders once at the beginning
     print("Creating mixed training dataloader...")
-    train_loader = create_mixed_dataloader(all_scenarios[:2], config, train=True)
+    train_loader = create_mixed_dataloader(all_scenarios[:], config, train=True)
     
     print("Creating mixed validation dataloader...")
-    val_loader = create_mixed_dataloader(all_scenarios[:2], config, train=False)
+    val_loader = create_mixed_dataloader(all_scenarios[:], config, train=False)
     best_val_loss = float('inf')
     
 
