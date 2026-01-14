@@ -10,5 +10,5 @@ source ~/.bashrc
 conda activate pathformer
 
 # Run your training script
-python3 pretrain_mixed.py
+python3 multiscenario_direct_training.py
 # python3 deep_dive_decoder_inter_str_lists.py

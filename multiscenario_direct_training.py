@@ -40,6 +40,11 @@ from utils.utils import *
 from tqdm import tqdm
 import torch
 import numpy as np
+import pandas as pd
+import os
+
+csv_log_file = "final_scenario_results.csv"
+
 # %%
 scenario = 'city_89_nairobi_3p5'
 # scenario = 'city_0_newyork_3p5'
@@ -59,206 +64,20 @@ dm.info()
 config = {
     "BATCH_SIZE":128,
     "PAD_VALUE": 500,
-    "USE_WANDB": False,
+    "USE_WANDB": True,
     "LR":2e-5,
-    "epochs" : 100,
+    "epochs" : 1,
     "interaction_weight": 0.01,  # Weight for interaction loss
-    "experiment": f"{scenario}_interacaction_all_inter_str_dec_all_repeat"
+    "experiment": f"{scenario}_interacaction_all_inter_str_dec_all_repeat",
+    "hidden_dim": 512,
+    "n_layers": 8,
+    "n_heads": 8,
 }
 
 
 
 
 # %%
-# class MySeqDataLoader(torch.utils.data.Dataset):
-
-#     def __init__(self, scenario, tx_sets="all", seed=42, shuffle=False, pad_value=500, 
-#                  train=True, split_by="users", train_ratio=0.8, sort_by="power"):
-#         ### get length of dataset
-#         self.dataset = scenario
-#         self.Txs = 1
-#         self.pad_value = pad_value
-#         self.split_by = split_by
-#         self.sort_by = sort_by
-#         self.dataset_filtered = defaultdict(list)
-#         self.total_length = 0
-        
-     
-#         # if (type(self.dataset) != type([])) or hasattr(self.dataset, 'los'):
-#         if isinstance(self.dataset.n_ue, int):
-        
-#             self.dataset = [self.dataset]
-        
-#         if split_by == "Tx":
-#             self.Txs = list(range(len(self.dataset)))
-#             if train:
-#                 self.Txs = self.Txs[:int(train_ratio * len(self.Txs))]
-#             else:
-
-#                 self.Txs = self.Txs[int(train_ratio * len(self.Txs)):]
-
-#             for tx in self.Txs:
-#                 use_indices = self.dataset[tx].los != -1
-#                 n_ue = self.dataset[tx].n_ue
-            
-#                 for k in self.dataset[tx]:
-#                     if k not in ["txrx", "load_params", "name", "rt_params", "materials", "scene", "n_ue"]:
-#                         if self.dataset[tx][k].shape[0] == n_ue:
-#                             self.dataset_filtered[k].extend(self.dataset[tx][k][use_indices].tolist())
-#                 self.dataset_filtered["tx_pos"].extend(np.repeat(self.dataset[tx]["tx_pos"], n_ue, axis=0).tolist())
-
-#         elif split_by == "user":
-
-#             for tx in range(len(self.dataset)):
-#                 n_ue = self.dataset[tx].n_ue
-            
-
-#                 # --- user-level splitting ---
-#                 indices = np.arange(n_ue)
-#                 np.random.seed(seed + tx)
-#                 np.random.shuffle(indices)
-
-#                 split_idx = int(train_ratio * len(indices))
-#                 if train:
-#                     indices = indices[:split_idx]
-#                 else:
-#                     indices = indices[split_idx:]
-
-#                 use_indices = self.dataset[tx].los != -1
-#                 indices = [i for i in indices if use_indices[i]]
-
-#                 # Collect data
-#                 for k in self.dataset[tx]:
-#                     if k in ["txrx", "load_params", "name", "rt_params", "materials", "scene", "n_ue"]:
-#                         continue
-#                     if self.dataset[tx][k].shape[0] == n_ue:
-#                         self.dataset_filtered[k].extend(self.dataset[tx][k][indices].tolist())
-
-#                 # TX position duplicated for each UE sample
-#                 if np.array(self.dataset[tx]["tx_pos"]).ndim == 1:
-#                     self.dataset_filtered["tx_pos"].extend(
-#                         np.repeat(self.dataset[tx]["tx_pos"][np.newaxis, :], len(indices), axis=0).tolist()
-#                     )
-#                 else:
-#                     self.dataset_filtered["tx_pos"].extend(
-#                         np.repeat(self.dataset[tx]["tx_pos"], len(indices), axis=0).tolist()
-#                     )
-
-        
-#         self.seed = seed
-#         self.total_length = len(self.dataset_filtered[list(self.dataset_filtered.keys())[0]])
-
-#         # boundary = self.dataset[0]['rt_params']['raw_params']['studyarea']['boundary']['data']
-#         # self.mins = np.array([boundary[0][0], boundary[0][1], 
-#         #                      self.dataset[0]['rt_params']['raw_params']['studyarea']['boundary']['values']['zmin']]).astype(np.float32)
-#         # self.maxs = np.array([boundary[2][0], boundary[2][1], 
-#         #                      self.dataset[0]['rt_params']['raw_params']['studyarea']['boundary']['values']['zmax']]).astype(np.float32)
-
-#     def decode_interaction_to_multilabel(self, inter_code):
-#         """
-#         Convert interaction code to multi-label vector [R, D, S, T]
-#         Ignores repetitions: RRD -> RD, RR -> R
-        
-#         Returns:
-#             np.array of shape (4,): binary indicators for [R, D, S, T]
-#             Returns [-1, -1, -1, -1] for invalid/NaN codes
-#         """
-#         if np.isnan(inter_code):
-#             return np.array([-1, -1, -1, -1], dtype=np.float32)
-        
-#         code_str = str(int(inter_code))
-#         multi_label = np.zeros(4, dtype=np.float32)
-        
-#         # Map: 1->R, 2->D, 3->S, 4->T
-#         for digit in code_str:
-#             if digit == '1':
-#                 multi_label[0] = 1  # R
-#             elif digit == '2':
-#                 multi_label[1] = 1  # D
-#             elif digit == '3':
-#                 multi_label[2] = 1  # S
-#             elif digit == '4':
-#                 multi_label[3] = 1  # T
-        
-#         return multi_label
-
-#     def __getitem__(self, idx):
-#         prompt = []
-#         for k in ["tx_pos", "rx_pos"]:
-
-#             prompt.extend(self.dataset_filtered[k][idx])
-        
-#         # Sort paths based on sort_by option
-#         if self.sort_by == "power":
-#             indices = np.argsort(-np.array(self.dataset_filtered["power"][idx]))
-#         elif self.sort_by == "delay":
-#             indices = np.argsort(np.array(self.dataset_filtered["delay"][idx]))
-#         else:
-#             raise ValueError(f"Unknown sort_by option: {self.sort_by}")
-
-#         paths = []
-#         interactions = []  # NEW: multi-label interactions
-#         valid_paths = 0
-        
-#         # SOS token
-#         paths.append([0.0, 0.0, 0.0])
-#         interactions.append([-1, -1, -1, -1])  # SOS has no interaction label
-        
-#         for step_idx, indx in enumerate(indices):
-#             output_per_step = []
-#             broken = False
-            
-#             for k in ["delay", "power", "phase"]:
-#                 value = self.dataset_filtered[k][idx][indx]
-#                 if np.isnan(value):
-#                     value = self.pad_value
-#                     broken = True
-#                     break
-#                 elif k == "delay":
-#                     value = value * 1e6  # convert to us
-#                 elif k == "phase":
-#                     value = value * (np.pi/180)
-#                 elif k == "power":
-#                     value = value * 0.01
-                
-#                 output_per_step.append(value)
-            
-#             if not broken:
-#                 valid_paths += 1
-#                 paths.append(output_per_step)
-                
-#                 # NEW: Extract and decode interaction
-#                 inter_value = self.dataset_filtered["inter"][idx][indx]
-#                 inter_label = self.decode_interaction_to_multilabel(inter_value)
-#                 interactions.append(inter_label)
-        
-#         num_paths = [valid_paths]
-        
-#         return (torch.tensor(prompt, dtype=torch.float32), 
-#                 torch.tensor(paths, dtype=torch.float32), 
-#                 torch.tensor(num_paths, dtype=torch.float32) / 25.0,
-#                 torch.tensor(interactions, dtype=torch.float32))  # NEW
-
-#     def __len__(self):
-#         return self.total_length
-
-#     def collate_fn(self, batch):
-#         batch_prompts = torch.cat([i[0].unsqueeze(0) for i in batch], dim=0)
-#         batch_paths = [i[1] for i in batch]
-#         batch_paths = torch.nn.utils.rnn.pad_sequence(batch_paths, batch_first=True, 
-#                                                        padding_value=self.pad_value)
-#         batch_num_paths = [i[2] for i in batch]
-#         batch_num_paths = torch.nn.utils.rnn.pad_sequence(batch_num_paths, batch_first=True, 
-#                                                            padding_value=0)
-        
-#         # NEW: collate interactions
-#         batch_interactions = [i[3] for i in batch]
-#         batch_interactions = torch.nn.utils.rnn.pad_sequence(batch_interactions, batch_first=True,
-#                                                              padding_value=-1)
-        
-#         return batch_prompts, batch_paths, batch_num_paths, batch_interactions
-
-
 
 
 
@@ -288,254 +107,12 @@ for item in train_loader:
     break
 
 
-def generate_paths(model, prompt, max_steps=25, stop_threshold=0.5):
-    """
-    Generate paths autoregressively.
-    """
-    model.eval()
-    prompt = prompt.unsqueeze(0).cuda()  # (1, prompt_dim)
-
-    # Start with SOS tokens
-    cur = torch.zeros(1, 1, 3).cuda()  # (1, 1, 3) - delay, power, phase
-    inter_str = -1 * torch.ones(1, 1, 4).cuda()  # (1, 1, 4) - interaction labels
-
-    outputs = []
-    outputs_inter_str = []
-    
-    for t in range(max_steps):
-        # Forward pass
-        d, p, s, c, ph, pathcounts, inter_str_logits = model(prompt, cur, inter_str)
-        
-        # Get last timestep predictions
-        d_t = d[:, -1]           # (1,)
-        p_t = p[:, -1]           # (1,)
-        ph_t = ph[:, -1]         # (1,)
-        inter_logits_t = inter_str_logits[:, -1]  # (1, 4)
-        
-        # **FIX: Convert logits to binary predictions**
-        inter_pred_t = (torch.sigmoid(inter_logits_t) > 0.5).float()  # (1, 4) - binary [0, 1]
-        
-        # Store outputs
-        outputs.append(torch.stack([d_t, p_t, ph_t], dim=-1))
-        outputs_inter_str.append(inter_pred_t)
-        
-        # Append predictions for next iteration
-        next_path = torch.stack([d_t, p_t, ph_t], dim=-1).unsqueeze(1)  # (1, 1, 3)
-        cur = torch.cat([cur, next_path], dim=1)
-        
-        # **FIX: Use binary predictions, not logits**
-        inter_str = torch.cat([inter_str, inter_pred_t.unsqueeze(1)], dim=1)  # (1, t+2, 4)
-
-    return (torch.stack(outputs, dim=1).squeeze(0).detach().cpu(),  # (T, 3)
-            pathcounts, 
-            torch.stack(outputs_inter_str, dim=1).squeeze(0).detach().cpu())  # (T, 4)
-
 # %%
 print("No. of Train Points   : ", train_data.__len__())
 print("Batch Size           : ", config["BATCH_SIZE"])
 print("Train Batches        : ", train_loader.__len__())
 print("No. of Train Points   : ", val_data.__len__())
 print("Val Batches          : ", val_loader.__len__())
-
-# %%
-
-# class GPTBlock(nn.Module):
-#     def __init__(self, dim, n_heads, ff_dim):
-#         super().__init__()
-#         self.attn = nn.MultiheadAttention(
-#             embed_dim=dim, 
-#             num_heads=n_heads,
-#             dropout=0.1,
-#             batch_first=True
-#         )
-#         self.ln1 = nn.LayerNorm(dim)
-
-#         self.ff = nn.Sequential(
-#             nn.Linear(dim, ff_dim),
-#             nn.GELU(),
-#             nn.Linear(ff_dim, dim)
-#         )
-#         self.ln2 = nn.LayerNorm(dim)
-
-#     def forward(self, x, causal_mask):
-#         attn_out, _ = self.attn(x, x, x, attn_mask=causal_mask)
-#         x = x + attn_out
-#         x = self.ln1(x)
-
-#         ff_out = self.ff(x)
-#         x = x + ff_out
-#         x = self.ln2(x)
-
-#         return x
-
-
-# class GPTPathDecoder(nn.Module):
-#     def __init__(
-#         self,
-#         prompt_dim=6,
-#         hidden_dim=512,
-#         n_layers=6,
-#         n_heads=4,
-#         prefix_len=4,
-#         max_T=26,
-#         pad_value=500
-#     ):
-#         super().__init__()
-#         self.pad_value = pad_value
-#         self.hidden_dim = hidden_dim
-#         self.prefix_len = prefix_len
-#         self.max_T = max_T
-
-#         # Path token embedding
-#         self.path_in = nn.Linear(8, hidden_dim)
-
-#         self.pos_emb = nn.Embedding(max_T + prefix_len, hidden_dim)
-
-#         # Convert prompt → prefix tokens
-#         self.prompt_to_prefix = nn.Linear(prompt_dim, prefix_len * hidden_dim)
-
-#         # GPT layers
-#         self.layers = nn.ModuleList([
-#             GPTBlock(dim=hidden_dim, n_heads=n_heads, ff_dim=4 * hidden_dim)
-#             for _ in range(n_layers)
-#         ])
-
-#         # Output heads
-#         self.out = nn.Linear(hidden_dim, 4)  # delay, power, sin(phase), cos(phase)
-        
-#         # NEW: Multi-label interaction head (4 outputs: R, D, S, T)
-#         self.interaction_head = nn.Linear(hidden_dim, 4)
-        
-#         # Path count head
-#         self.pathcount_head = nn.Sequential(
-#             nn.Linear(prefix_len * hidden_dim, hidden_dim),
-#             nn.GELU(),
-#             nn.Linear(hidden_dim, 1)
-#         )
-
-#     def forward(self, prompts, paths, interactions):
-#         """
-#         prompts: (B, prompt_dim)
-#         paths: (B, T, 4)
-#         interactions: (B,T,4)
-#         Returns:
-#             delay_pred, power_pred, phase_sin_pred, phase_cos_pred, 
-#             phase_pred, pathcounts, interaction_logits
-#         """
-#         B, T, _ = paths.shape
-
-#         phase = paths[:, :, 2]
-#         sinp = torch.sin(phase)
-#         cosp = torch.cos(phase)
-        
-#         # Convert prompt → prefix tokens
-#         prefix_raw = self.prompt_to_prefix(prompts)
-#         prefix = prefix_raw.view(B, self.prefix_len, self.hidden_dim)
-
-#         # Embed path tokens
-#         paths_expanded = torch.stack([paths[:, :, 0], paths[:, :, 1], sinp, cosp], dim=-1)
-        
-
-#         interactions_clean = interactions.clone()
-#         interactions_clean[interactions_clean == -1] = 0
-    
-#         combined = torch.cat([paths_expanded, interactions_clean], dim=-1)
-#         x = self.path_in(combined)
-#         # Concatenate prefix + tokens
-#         full_seq = torch.cat([prefix, x], dim=1)
-
-#         # Positional embeddings
-#         pos = self.pos_emb(torch.arange(self.prefix_len + T, device=x.device))
-#         full_seq = full_seq + pos
-
-#         # Causal mask
-#         total_len = self.prefix_len + T
-#         causal_mask = torch.triu(
-#             torch.ones(total_len, total_len, device=x.device), 1
-#         ).bool()
-
-#         # Pass through GPT layers
-#         h = full_seq
-#         for layer in self.layers:
-#             h = layer(h, causal_mask)
-
-#         # Path predictions
-#         h_paths = h[:, self.prefix_len:, :]
-
-#         # Path parameters
-#         out = self.out(h_paths)
-#         delay_pred = out[:, :, 0]
-#         power_pred = out[:, :, 1]
-#         phase_sin_pred = out[:, :, 2]
-#         phase_cos_pred = out[:, :, 3]
-#         phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)
-        
-#         # NEW: Interaction predictions (multi-label logits)
-#         interaction_logits = self.interaction_head(h_paths)  # (B, T, 4)
-        
-#         # Path count head
-#         prefix_flat = prefix.reshape(B, -1)
-#         pathcounts = self.pathcount_head(prefix_flat)
-
-#         return (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, 
-#                 phase_pred, pathcounts, interaction_logits)
-
-# %%
-
-
-
-# def masked_loss(delay_pred, power_pred, sin_pred, cos_pred, phase_pred, 
-#                 path_length_predict, interaction_logits, targets, path_length_targets,
-#                 interaction_targets, pad_value=500, interaction_weight=0.1):
-#     """
-#     Added interaction prediction loss as auxiliary task.
-    
-#     Args:
-#         interaction_logits: (B, T, 4) - logits for [R, D, S, T]
-#         interaction_targets: (B, T, 4) - binary labels, -1 for invalid
-#         interaction_weight: weight for interaction loss
-#     """
-#     delay_t, power_t, phase_t = targets[:, :, 0], targets[:, :, 1], targets[:, :, 2]
-#     sinp = torch.sin(phase_t)
-#     cosp = torch.cos(phase_t)
-    
-#     # Mask for valid paths
-#     mask = (delay_t != pad_value)
-
-#     # Existing losses
-#     loss_delay = ((delay_pred - delay_t)**2)[mask].mean()
-#     loss_power = ((power_pred - power_t)**2)[mask].mean()
-#     loss_sin = ((sin_pred - sinp)**2)[mask].mean()
-#     loss_cos = ((cos_pred - cosp)**2)[mask].mean()
-#     loss_phase = (loss_sin + loss_cos) / 2
-
-#     loss_path_length = ((path_length_targets - path_length_predict)**2).mean() #* 0.0
-    
-#     # NEW: Multi-label interaction loss
-#     # Mask: valid interactions (not -1)
-#     interaction_mask = (interaction_targets[:, :, 0] != -1)  # (B, T)
-    
-#     if interaction_mask.any():
-#         # Binary cross-entropy for multi-label classification
-#         valid_logits = interaction_logits[interaction_mask]  # (N, 4)
-#         valid_targets = interaction_targets[interaction_mask]  # (N, 4)
-        
-#         loss_interaction = F.binary_cross_entropy_with_logits(
-#             valid_logits,
-#             valid_targets,
-#             reduction='mean'
-#         )
-#     else:
-#         loss_interaction = torch.tensor(0.0, device=delay_pred.device)
-    
-#     total_loss = (loss_delay + loss_power + loss_phase + 
-#                   loss_path_length + interaction_weight * loss_interaction)
-
-#     # total_loss = (loss_delay + 
-#     #              + interaction_weight * loss_interaction)
-     
-#     return (total_loss, loss_delay, loss_power, loss_phase, 
-#             loss_path_length, loss_interaction)
 
 def compute_stop_metrics(path_count, targets, pad_value=500):
     """
@@ -564,10 +141,15 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
     power_maes = []
     phase_maes = []
     path_length_maes = []
+    # AoA metrics
+    az_errors = []
+    el_errors = []
+    az_maes = []
+    el_maes = []
     with torch.no_grad():
         outer_bar = tqdm(val_loader, desc="Evaluating (batches)", leave=True)
 
-        for prompts, paths, path_lengths,interactions in outer_bar:
+        for prompts, paths, path_lengths, interactions, env, env_prop in outer_bar:
             prompts = prompts.cuda()
             paths = paths.cuda()
             path_lengths = path_lengths.cuda()
@@ -577,11 +159,13 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
                              desc="   Processing samples", 
                              leave=False)
 
+
             for b in inner_bar:
                 generated, path_lengths_pred, inter_str_pred = generate_paths(model, prompts[b], max_steps=max_generate)
 
                 generated = generated.cuda()
-                gt = paths[b][1:, :3]  # only (delay, power, phase)
+                # ground truth: delay, power, phase, aoa_az, aoa_el
+                gt = paths[b][1:, :5]
 
                 # Mask padded values
                 valid_mask = (gt[:,0] != train_data.pad_value)
@@ -602,10 +186,23 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
                 # Phase errors
                 y_hat_angles = (pred[:,2] / (np.pi/180))
                 y_angles = (gt[:,2] / (np.pi/180))
-                # phase_rmse =    (torch.mean(y_hat_angles - y_angles)**2).sqrt().item()
                 phase_circular_dist = (y_hat_angles - y_angles + 180) % 360 - 180
                 phase_rmse = torch.mean(phase_circular_dist**2).sqrt().item()
                 phase_mae = torch.mean(torch.abs(phase_circular_dist)).item()
+
+                # AoA azimuth errors
+                y_hat_az = (pred[:,3] / (np.pi/180))
+                y_az = (gt[:,3] / (np.pi/180))
+                az_circular_dist = (y_hat_az - y_az + 180) % 360 - 180
+                az_rmse = torch.mean(az_circular_dist**2).sqrt().item()
+                az_mae = torch.mean(torch.abs(az_circular_dist)).item()
+
+                # AoA elevation errors
+                y_hat_el = (pred[:,4] / (np.pi/180))
+                y_el = (gt[:,4] / (np.pi/180))
+                el_circular_dist = (y_hat_el - y_el + 180) % 360 - 180
+                el_rmse = torch.mean(el_circular_dist**2).sqrt().item()
+                el_mae = torch.mean(torch.abs(el_circular_dist)).item()
 
                 # Path length RMSE
                 # print(path_lengths_pred, path_lengths[b],)
@@ -618,21 +215,30 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
                 power_errors.append(power_rmse)
                 phase_errors.append(phase_rmse)
                 path_length_rmses.append(length_rmse)
+                # AoA
+                az_errors.append(az_rmse)
+                el_errors.append(el_rmse)
 
                 delay_maes.append(delay_mae)
                 power_maes.append(power_mae)
                 phase_maes.append(phase_mae)
                 path_length_maes.append(length_mae)
+                az_maes.append(az_mae)
+                el_maes.append(el_mae)
                 # Show live metric values in tqdm
                 inner_bar.set_postfix({
-                    "delay": f"{delay_rmse:.3f}",
-                    "power": f"{power_rmse:.3f}",
-                    "phase": f"{phase_rmse:.3f}",
-                    "length": f"{length_rmse:.3f}",
-                    "delay": f"{delay_mae:.3f}",
-                    "power": f"{power_mae:.3f}",
-                    "phase": f"{phase_mae:.3f}",
-                    "length": f"{length_mae:.3f}"
+                    "delay_rmse": f"{delay_rmse:.3f}",
+                    "power_rmse": f"{power_rmse:.3f}",
+                    "phase_rmse": f"{phase_rmse:.3f}",
+                    "az_rmse": f"{az_rmse:.3f}",
+                    "el_rmse": f"{el_rmse:.3f}",
+                    "length_rmse": f"{length_rmse:.3f}",
+                    "delay_mae": f"{delay_mae:.3f}",
+                    "power_mae": f"{power_mae:.3f}",
+                    "phase_mae": f"{phase_mae:.3f}",
+                    "az_mae": f"{az_mae:.3f}",
+                    "el_mae": f"{el_mae:.3f}",
+                    "length_mae": f"{length_mae:.3f}"
                 })
 
                 # wandb logging
@@ -642,9 +248,13 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
                         "test_power_rmse": power_rmse,
                         "test_phase_circ_err": phase_rmse,
                         "test_stop_length_rmse": length_rmse,
+                        "test_az_rmse": az_rmse,
+                        "test_el_rmse": el_rmse,
                         "test_delay_mae": delay_mae,
                         "test_power_mae": power_mae,
                         "test_phase_circ_err_mae": phase_mae,
+                        "test_az_mae": az_mae,
+                        "test_el_mae": el_mae,
                         "test_stop_length_mae": length_mae,
                     })
             # print("Batch evaluation complete.")
@@ -665,6 +275,8 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
     avg_delay = np.mean(delay_errors)
     avg_power = np.mean(power_errors)
     avg_phase = np.mean(phase_errors)
+    avg_az = np.mean(az_errors) if len(az_errors) > 0 else 0.0
+    avg_el = np.mean(el_errors) if len(el_errors) > 0 else 0.0
     avg_path_length_rmse = np.mean(path_length_rmses)
    
     avg_delay_mae = np.mean(delay_maes)
@@ -676,11 +288,15 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
     print(f"Delay RMSE           : {avg_delay:.4f} µs")
     print(f"Power RMSE           : {avg_power:.4f} dB")
     print(f"Phase RMSE           : {avg_phase:.4f} degrees")
+    print(f"AoA Azimuth RMSE     : {avg_az:.4f} degrees")
+    print(f"AoA Elevation RMSE   : {avg_el:.4f} degrees")
     print(f"Path Length RMSE     : {avg_path_length_rmse:.4f}")
         
     print(f"Delay MAE           : {avg_delay_mae:.4f} µs")
     print(f"Power MAE           : {avg_power_mae:.4f} dB")
     print(f"Phase MAE           : {avg_phase_mae:.4f} degrees")
+    print(f"AoA Azimuth MAE     : {np.mean(az_maes) if len(az_maes)>0 else 0.0:.4f} degrees")
+    print(f"AoA Elevation MAE   : {np.mean(el_maes) if len(el_maes)>0 else 0.0:.4f} degrees")
     print(f"Path Length MAE     : {avg_path_length_mae:.4f}")
     print("=====================================================\n")
 
@@ -695,7 +311,7 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
         wandb.run.summary["test_phase_circ_err_mae"] = avg_phase_mae
         wandb.run.summary["test_path_length_mae"] = avg_path_length_mae
 
-    return avg_delay, avg_power, avg_phase, avg_path_length_rmse, avg_delay_mae, avg_power_mae, avg_phase_mae,avg_path_length_mae 
+    return avg_delay, avg_power, avg_phase, avg_az, avg_el, avg_path_length_rmse, avg_delay_mae, avg_power_mae, avg_phase_mae, avg_path_length_mae 
 
 
 
@@ -1033,7 +649,7 @@ all_scenarios = ['city_47_chicago_3p5', 'city_23_beijing_3p5', 'city_91_xiangyan
 for scenario in all_scenarios:
 # %%
     # model = GPTPathDecoder().to(device)
-    model = PathDecoder().to(device)
+    model = PathDecoder(hidden_dim=config["hidden_dim"], n_layers = config["n_layers"], n_heads=config["n_heads"]).to(device)
 
     print("Total trainable parameters:", count_parameters(model))
     dataset = dm.load(scenario, )
@@ -1041,11 +657,14 @@ for scenario in all_scenarios:
     config = {
         "BATCH_SIZE":128,
         "PAD_VALUE": 500,
-        "USE_WANDB": False,
+        "USE_WANDB": True,
         "LR":2e-5,
-        "epochs" : 40,
+        "epochs" : 50,
         "interaction_weight": 0.01,  # Weight for interaction loss
-        "experiment": f"{scenario}_interacaction_all_inter_str_dec_all_repeat"
+        "experiment": f"enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
+        "hidden_dim": 512,
+        "n_layers": 8,
+        "n_heads": 8,
     }
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["LR"])
@@ -1122,8 +741,30 @@ for scenario in all_scenarios:
     checkpoint_path
 
     # %%
-    print(evaluate_model(model, val_loader))
+    results = evaluate_model(model, val_loader)
+    # print(results)
+    avg_delay, avg_power, avg_phase, avg_az, avg_el, avg_path_length_rmse, avg_delay_mae, avg_power_mae, avg_phase_mae, avg_path_length_mae  = results
+    # (avg_delay, avg_power, avg_phase, avg_path_length_rmse, 
+    #  avg_delay_mae, avg_power_mae, avg_phase_mae, avg_path_length_mae) = results
+    scenario_row = {
+            "scenario": scenario,
+            "delay_rmse": avg_delay,
+            "power_rmse": avg_power,
+            "phase_rmse": avg_phase,
+            "path_length_rmse": avg_path_length_rmse,
+            "delay_mae": avg_delay_mae,
+            "power_mae": avg_power_mae,
+            "phase_mae": avg_phase_mae,
+            "path_length_mae": avg_path_length_mae,
+            "best_val_loss": best_loss.item() if hasattr(best_loss, 'item') else best_loss
+        }
 
+        # 4. Append to CSV
+    df = pd.DataFrame([scenario_row])
+    # header=not os.path.exists(...) ensures the header is only written once
+    df.to_csv(csv_log_file, mode='a', index=False, header=not os.path.exists(csv_log_file))
+
+    print(f"✓ Results for {scenario} saved to {csv_log_file}")
     del dataset, train_loader, val_loader, model
 
 
