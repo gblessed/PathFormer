@@ -61,12 +61,12 @@ config = {
     "PAD_VALUE": 500,
     "USE_WANDB": True,
     "LR":2e-5,
-    "epochs" : 50,
+    "epochs" : 200,
     "interaction_weight": 0.01,  # Weight for interaction loss
     # "experiment": "interacaction_power_only_dec_only",
 
     # "experiment": f"pre_train_all_scenarios_interaction_weight_0.01_better_scheduler",
-    "experiment": f"true_enc_pre_mixed_train_all_scenarios_interaction_weight_0.01_better_scheduler",
+    "experiment": f"longer_true_enc_pre_mixed_train_all_scenarios_interaction_weight_0.01_better_scheduler",
     # "hidden_dim": 512,
     # "n_layers": 6,
     # "n_heads": 4,
@@ -356,10 +356,14 @@ def train_with_interactions(model, config, task = None):
         val_path_length_rmse = []
         val_loss_az = []
         val_loss_el = []
-        if epoch > 4:
-            config['BATCH_SIZE'] = 64
-
-    
+        # if epoch > 100:
+        #     config['BATCH_SIZE'] = 64
+        #     del train_loader, val_loader
+        #     print("Creating mixed training dataloader...")
+        #     train_loader = create_mixed_dataloader(all_scenarios[:], config, train=True)
+            
+        #     print("Creating mixed validation dataloader...")
+        #     val_loader = create_mixed_dataloader(all_scenarios[:], config, train=False)
         # -------------------- TRAINING --------------------
         model.train()
 
@@ -394,6 +398,8 @@ def train_with_interactions(model, config, task = None):
             
             optimizer.zero_grad()
             total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             optimizer.step()
             
             path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1),

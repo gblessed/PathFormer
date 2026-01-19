@@ -15,7 +15,54 @@ from typing import Tuple, Optional
 from numpy.typing import NDArray
 
 criterion =  torch.nn.MSELoss()
-def generate_paths(model, prompt, max_steps=25, stop_threshold=0.5):
+def generate_paths(model, prompt, env, env_prop, max_steps=25, stop_threshold=0.5):
+    """
+    Generate paths autoregressively.
+    """
+    model.eval()
+    prompt = prompt.unsqueeze(0).cuda()  # (1, prompt_dim)
+    env = env.unsqueeze(0).cuda()  # (1, prompt_dim)
+    env_prop = env_prop.unsqueeze(0).cuda()  # (1, prompt_dim)
+    # Start with SOS tokens (delay, power, phase, aoa_az, aoa_el)
+    cur = torch.zeros(1, 1, 5).cuda()  # (1, 1, 5)
+    inter_str = -1 * torch.ones(1, 1, 4).cuda()  # (1, 1, 4) - interaction labels
+
+    outputs = []
+    outputs_inter_str = []
+
+    for t in range(max_steps):
+        # Forward pass - unpack expanded outputs (including aoa preds)
+        d, p, s, c, ph, az_s, az_c, az, el_s, el_c, el, pathcounts, inter_str_logits = model(prompt, cur, inter_str, env, env_prop, pre_train = False)
+
+        # Get last timestep predictions
+        d_t = d[:, -1]           # (1,)
+        p_t = p[:, -1]           # (1,)
+        ph_t = ph[:, -1]         # (1,)
+        az_t = az[:, -1]
+        el_t = el[:, -1]
+        inter_logits_t = inter_str_logits[:, -1]  # (1, 4)
+
+        # Convert logits to binary predictions
+        inter_pred_t = (torch.sigmoid(inter_logits_t) > 0.5).float()  # (1, 4) - binary [0, 1]
+
+        # Store outputs (delay, power, phase, aoa_az, aoa_el)
+        outputs.append(torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1))
+        outputs_inter_str.append(inter_pred_t)
+
+        # Append predictions for next iteration
+        next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1).unsqueeze(1)  # (1, 1, 5)
+        cur = torch.cat([cur, next_path], dim=1)
+
+        # Use binary predictions for interactions
+        inter_str = torch.cat([inter_str, inter_pred_t.unsqueeze(1)], dim=1)  # (1, t+2, 4)
+
+    return (torch.stack(outputs, dim=1).squeeze(0).detach().cpu(),  # (T, 5)
+            pathcounts, 
+            torch.stack(outputs_inter_str, dim=1).squeeze(0).detach().cpu())  # (T, 4)
+
+
+
+def generate_paths_no_env(model, prompt, max_steps=25, stop_threshold=0.5):
     """
     Generate paths autoregressively.
     """
@@ -58,7 +105,6 @@ def generate_paths(model, prompt, max_steps=25, stop_threshold=0.5):
     return (torch.stack(outputs, dim=1).squeeze(0).detach().cpu(),  # (T, 5)
             pathcounts, 
             torch.stack(outputs_inter_str, dim=1).squeeze(0).detach().cpu())  # (T, 4)
-
 def masked_loss_pre_train(delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
                 path_length_predict, interaction_logits, targets, path_length_targets,
                 interaction_targets, pad_value=500, interaction_weight=0.1):

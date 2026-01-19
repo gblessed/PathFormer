@@ -33,7 +33,7 @@ from sklearn.metrics import mean_squared_error
 import numpy as np
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from models import PathDecoder, GPTPathDecoder
+from models import PathDecoder, GPTPathDecoder, PathDecoderEnv
 from dataset.dataloaders import PreTrainMySeqDataLoader
 from utils.utils import *
 
@@ -43,7 +43,7 @@ import numpy as np
 import pandas as pd
 import os
 
-csv_log_file = "final_scenario_results.csv"
+csv_log_file = "fine_tune_final_scenario_results.csv"
 
 # %%
 scenario = 'city_89_nairobi_3p5'
@@ -66,9 +66,9 @@ config = {
     "PAD_VALUE": 500,
     "USE_WANDB": False,
     "LR":2e-5,
-    "epochs" : 100,
+    "epochs" : 50,
     "interaction_weight": 0.01,  # Weight for interaction loss
-    "experiment": f"{scenario}_interacaction_all_inter_str_dec_all_repeat",
+    "experiment": f"true_enc_pre_mixed_train_all_scenarios_interaction_weight_0.01_better_scheduler",
     "hidden_dim": 512,
     "n_layers": 8,
     "n_heads": 8,
@@ -153,6 +153,8 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
             prompts = prompts.cuda()
             paths = paths.cuda()
             path_lengths = path_lengths.cuda()
+            env = env.cuda()
+            env_prop = env_prop.cuda()
          
             # Inner tqdm to show per-sample progress
             inner_bar = tqdm(range(prompts.size(0)), 
@@ -161,7 +163,7 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
 
 
             for b in inner_bar:
-                generated, path_lengths_pred, inter_str_pred = generate_paths_no_env(model, prompts[b], max_steps=max_generate)
+                generated, path_lengths_pred, inter_str_pred = generate_paths(model, prompts[b], env_prop[b], env[b],max_steps=max_generate)
 
                 generated = generated.cuda()
                 # ground truth: delay, power, phase, aoa_az, aoa_el
@@ -284,6 +286,8 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
     avg_phase_mae = np.mean(phase_maes)
     avg_az_mae = np.mean(az_maes)
     avg_el_mae = np.mean(el_maes)
+
+
     avg_path_length_mae= np.mean(path_length_maes)
 
     print("\n=================  Final EVALUATION RESULTS =================")
@@ -325,7 +329,7 @@ def show_example(model, val_loader, sample_index=0, k=25, plot=True):
     prompts = prompts.cuda()
     paths = paths.cuda()
     
-    pred_paths, path_lengths_pred,inter_str_pred= generate_paths_no_env(model, prompts[sample_index])
+    pred_paths, path_lengths_pred,inter_str_pred= generate_paths(model, prompts[sample_index])
     
 
     pred = pred_paths[0]  # (T,3)
@@ -375,7 +379,7 @@ def evaluate_generation(val_loader, n_samples=3):
     for i, (prompts, paths) in enumerate(val_loader):
         if i >= n_samples:
             break
-        pred, path_lengths_pred = generate_paths_no_env(model, prompts[0])  # autoregressive generation
+        pred, path_lengths_pred = generate_paths(model, prompts[0])  # autoregressive generation
         print(f"path lengths pred: {path_lengths_pred[0]}")
         print(f"\nSample {i}")
         print("GT paths (first 5):")
@@ -394,7 +398,7 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
     """
 
     best_val_loss = float('inf')
-
+    once = False
 
     for epoch in range(config["epochs"]):
         # -------------------- TRAINING --------------------
@@ -409,13 +413,19 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
         train_loss_az = []
         train_loss_el = []
         train_ch_nmse = []
+        if (not (once)) and (epoch+1 > config["unfreezing"]):
+            print("="*30)
+            print("unfreezing all")
+            unfreeze_all(model)
+            once = True
         pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False)
         for prompts, paths, path_lengths, interactions, env, env_prop in pbar:  # NEW: added interactions
             prompts = prompts.cuda()
             paths = paths.cuda()
             path_lengths = path_lengths.cuda()
             interactions = interactions.cuda()  # NEW
-            
+            env = env.cuda()
+            env_prop = env_prop.cuda()
             paths_in = paths[:, :-1, :]
             interactions_in = interactions[:, :-1, :]
 
@@ -424,7 +434,7 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
 
             (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
              az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
-             path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
+             path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in,env_prop, env, pre_train=False )
 
             (total_loss, loss_delay, loss_power, loss_phase,
              loss_az, loss_el, loss_path_length, loss_interaction,loss_channel) = masked_loss(
@@ -521,7 +531,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                 paths = paths.cuda()
                 path_lengths = path_lengths.cuda()
                 interactions = interactions.cuda()  # NEW
-
+                env = env.cuda()
+                env_prop = env_prop.cuda()
                 paths_in = paths[:, :-1, :]
                 interactions_in = interactions[:, :-1, :]
 
@@ -530,7 +541,7 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
 
                 (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
                  az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
-                 path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
+                 path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in,env_prop, env, pre_train=False )
                 
                 (total_loss, loss_delay, loss_power, loss_phase,
                 loss_az, loss_el, loss_path_length, loss_interaction,loss_channel) = masked_loss(
@@ -642,16 +653,72 @@ if config["USE_WANDB"]:
     )
 
 
+def freeze_for_finetuning(model):
+    # 1. First, disable gradients for EVERY parameter in the model
+    for param in model.parameters():
+        param.requires_grad = False
+
+    # 2. UNFREEZE Encoder / Embedding components
+    # (The parts that process the input before the decoder)
+    model.prompt_to_prefix.requires_grad_(True)
+    # model.path_in.requires_grad_(True)
+    # model.pos_emb.requires_grad_(True)
+    # model.environment_embed.requires_grad_(True)
+    # model.environment_prop_embed.requires_grad_(True)
+
+    # 3. UNFREEZE Cross-Attention weights only inside the Decoder
+    # In PyTorch, cross-attention is 'multihead_attn' 
+    # self-attention is 'self_attn'
+    for name, param in model.decoder.named_parameters():
+        if "multihead_attn" in name:
+            param.requires_grad = True
+            print(f"Unfrozen: {name}")
+
+    # Note: 'self_attn', 'linear1', 'linear2', 'norm1', 'norm2', 'norm3' 
+    # stay frozen inside the decoder layers.
+
+    # 4. EXPLICITLY FREEZE the Linear Heads (just to be safe)
+    model.out.requires_grad_(False)
+    model.interaction_head.requires_grad_(False)
+    model.pathcount_head.requires_grad_(False)
+
+def unfreeze_all(model):
+    # 1. First, disable gradients for EVERY parameter in the model
+    for param in model.parameters():
+        param.requires_grad = True
 
 
-
+    # %%
+def load_best_checkpoint(model, checkpoint_path="checkpoints2/best_model_checkpoint.pth"):
+    """
+    Load the best model checkpoint saved during training.
+    
+    Args:
+        model: The model instance to load the checkpoint into
+        checkpoint_path: Path to the checkpoint file
+    
+    Returns:
+        epoch: Epoch at which best checkpoint was saved
+        best_val_loss: Best validation loss achieved
+    """
+    if not os.path.exists(checkpoint_path):
+        print(f"Warning: Checkpoint not found at {checkpoint_path}")
+        return None, None
+    
+    checkpoint = torch.load(checkpoint_path)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    epoch = checkpoint['epoch']
+    best_avg_val_loss = checkpoint['best_val_loss']
+    
+    print(f"✓ Loaded best checkpoint from epoch {epoch} (val_loss: {best_avg_val_loss:.4f})")
+    return epoch, best_avg_val_loss
 # %%
 all_scenarios = ['city_47_chicago_3p5', 'city_23_beijing_3p5', 'city_91_xiangyang_3p5', 'city_17_seattle_3p5_s', 'city_12_fortworth_3p5', 'city_92_sãopaulo_3p5', 'city_35_san_francisco_3p5', 'city_10_florida_villa_7gp_1758095156175', 'city_19_oklahoma_3p5_s', 'city_74_chiyoda_3p5']
 
 for scenario in all_scenarios:
 # %%
     # model = GPTPathDecoder().to(device)
-    model = PathDecoder(hidden_dim=config["hidden_dim"], n_layers = config["n_layers"], n_heads=config["n_heads"]).to(device)
+    model = PathDecoderEnv(hidden_dim=config["hidden_dim"], n_layers = config["n_layers"], n_heads=config["n_heads"]).to(device)
 
     print("Total trainable parameters:", count_parameters(model))
     dataset = dm.load(scenario, )
@@ -661,12 +728,17 @@ for scenario in all_scenarios:
         "PAD_VALUE": 500,
         "USE_WANDB": False,
         "LR":2e-5,
-        "epochs" : 100,
+        "unfreezing":50,
+        "epochs" : 150,
         "interaction_weight": 0.01,  # Weight for interaction loss
-        "experiment": f"enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
+        "base_experiment": f"true_enc_pre_mixed_train_all_scenarios_interaction_weight_0.01_better_scheduler",
+        "experiment": f"finetune_{scenario}_interaction_weight_0.01",
+        "finetune_scenario": f"{scenario}",
+        "experiment": f"true_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
         "hidden_dim": 512,
         "n_layers": 8,
         "n_heads": 8,
+        "pre_train":False
     }
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["LR"])
@@ -682,9 +754,15 @@ for scenario in all_scenarios:
 
     # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=2, mode="min")
 
+    best_val_loss = float('inf')
+    base_model_checkpoint_path = f"{config['base_experiment']}_best_model_checkpoint.pth"
+    base_model_checkpoint_path = os.path.join("checkpoints20M", base_model_checkpoint_path)
     checkpoint_path = f"{config['experiment']}_best_model_checkpoint.pth"
+
     os.makedirs("checkpoints2", exist_ok=True)
     checkpoint_path = os.path.join("checkpoints2", checkpoint_path)
+
+
     train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
 
     train_loader = torch.utils.data.DataLoader(
@@ -700,7 +778,9 @@ for scenario in all_scenarios:
         shuffle     = False,
         collate_fn= val_data.collate_fn
         )
-
+    best_epoch, best_loss = load_best_checkpoint(model, checkpoint_path=base_model_checkpoint_path)
+    freeze_for_finetuning(model)
+    # unfreeze_all(model)
     # Train
     train_with_interactions(model, train_loader, val_loader, config, train_data)
     
@@ -709,30 +789,7 @@ for scenario in all_scenarios:
     # evaluate_generation(train_loader)
     # 
 
-    # %%
-    def load_best_checkpoint(model, checkpoint_path="checkpoints2/best_model_checkpoint.pth"):
-        """
-        Load the best model checkpoint saved during training.
-        
-        Args:
-            model: The model instance to load the checkpoint into
-            checkpoint_path: Path to the checkpoint file
-        
-        Returns:
-            epoch: Epoch at which best checkpoint was saved
-            best_val_loss: Best validation loss achieved
-        """
-        if not os.path.exists(checkpoint_path):
-            print(f"Warning: Checkpoint not found at {checkpoint_path}")
-            return None, None
-        
-        checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        epoch = checkpoint['epoch']
-        best_avg_val_loss = checkpoint['best_val_loss']
-        
-        print(f"✓ Loaded best checkpoint from epoch {epoch} (val_loss: {best_avg_val_loss:.4f})")
-        return epoch, best_avg_val_loss
+
     # torch.serialization.add_safe_globals([np._core.multiarray.scalar])
     # torch.serialization.add_safe_globals([np.dtype])
 
