@@ -656,3 +656,43 @@ def array_response_batch_torch(ant_ind: torch.Tensor, theta: torch.Tensor, phi: 
     result[batch_idx, :, path_idx] = valid_responses.T
     
     return result
+
+
+
+
+def get_dataset_statistics(dataloader_obj):
+    stats = {}
+    df = dataloader_obj.dataset_filtered
+    
+    # 1. User Locations (rx_pos)
+    # Shape is (N, 3)
+    rx_positions = np.array(df['rx_pos'])
+    stats['rx_pos'] = {
+        'mean': np.mean(rx_positions, axis=0),
+        'std':  np.std(rx_positions, axis=0),
+        'min':  np.min(rx_positions, axis=0),
+        'max':  np.max(rx_positions, axis=0)
+    }
+
+    # 2. Path Features (Delay, Power, etc.)
+    # These are lists of lists/arrays, so we flatten them while ignoring NaNs
+    path_keys = ["delay", "power", "phase", "aoa_az", "aoa_el"]
+    
+    for k in path_keys:
+        # Flatten all paths across all users and remove NaNs
+        flat_data = np.concatenate([np.array(v).flatten() for v in df[k]])
+        valid_data = flat_data[~np.isnan(flat_data)]
+        
+        # Apply the same scaling as your __getitem__ to see "actual" input ranges
+        if k == "delay": valid_data = valid_data * 1e6
+        elif k == "power": valid_data = valid_data * 0.01
+        elif k in ["phase", "aoa_az", "aoa_el"]: valid_data = valid_data * (np.pi/180)
+
+        stats[k] = {
+            'mean': np.mean(valid_data),
+            'std':  np.std(valid_data),
+            'min':  np.min(valid_data),
+            'max':  np.max(valid_data)
+        }
+    
+    return stats

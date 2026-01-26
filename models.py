@@ -490,7 +490,7 @@ class PathDecoder(nn.Module):
         # Output head: predict next (delay, power, phase_sin, phase_cos, is_stop)
         self.out_delay = nn.Sequential(
                     nn.Linear(hidden_dim, 1),
-                    nn.Sigmoid(),
+                    # nn.Sigmoid(),
                 )
         
         self.out_power = nn.Sequential(
@@ -502,7 +502,7 @@ class PathDecoder(nn.Module):
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.GELU(),
                     nn.Linear(hidden_dim, 6),
-                    nn.Tanh(),
+                    # nn.Tanh(),
                 )
         self.pathcount_head = nn.Sequential(
             nn.Linear(prefix_len * hidden_dim, hidden_dim),
@@ -609,3 +609,76 @@ class PathDecoder(nn.Module):
         return (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
             az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
             pathcounts, interaction_logits)
+
+
+
+class PathFormerLocalizer(nn.Module):
+    def __init__(self, pretrained_backbone, hidden_dim=512):
+        super().__init__()
+        self.backbone = pretrained_backbone
+        
+        # We use a summary of the transformer's hidden states to predict coordinates
+        # self.localization_head = nn.Sequential(
+        #     nn.Linear(hidden_dim, hidden_dim // 2),
+        #     nn.GELU(),
+        #     nn.Dropout(0.1),
+        #     nn.Linear(hidden_dim // 2, 2) # Predicts [x, y, z]
+        # )
+        self.localization_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            # nn.Dropout(0.1),
+            nn.Linear(hidden_dim, 2) # Predicts [x, y, z]
+        )
+
+    def forward(self, paths, interactions, env_prop, env):
+        batch_size = paths.shape[0]
+        B, T2, _ = env_prop.shape
+        env_len = 1 + T2
+        # During localization, we feed ZEROS as the prompt to simulate 
+        # the masked state the model learned during pre-training.
+        dummy_prompts = torch.zeros((batch_size, 6), device=paths.device)
+        
+        # 1. Get hidden states from the backbone
+        # We need a slight modification to your forward to return 'h'
+        # Or we call the internal decoder logic directly:
+        h = self.extract_backbone_features(dummy_prompts, paths, interactions, env_prop, env)
+        
+        # 2. Global Average Pooling over the path sequence tokens
+        # This provides a 'spatial summary' of all observed multi-path components
+        path_tokens = h[:, env_len:, :]
+        spatial_summary = torch.mean(path_tokens, dim=1)
+        
+        return self.localization_head(spatial_summary)
+
+    def extract_backbone_features(self, prompts, paths, interactions, env_prop, env):
+        # This mirrors the internal logic of your PathDecoderEnv.forward
+        B, T2, _ = env_prop.shape
+        env_emb = self.backbone.environment_embed(env).unsqueeze(1)
+        prop_emb = self.backbone.environment_prop_embed(env_prop)
+        
+        # Masked prefix logic
+        prefix_raw = self.backbone.prompt_to_prefix(prompts * 0.0)
+        prefix = prefix_raw.view(B, self.backbone.prefix_len, self.backbone.hidden_dim)
+
+        # Path Embedding (matching your 12-dim input logic)
+        phase = paths[:,:,2]
+        x_path = torch.stack([
+            paths[:,:,0], paths[:,:,1], torch.sin(phase), torch.cos(phase),
+            torch.sin(paths[:,:,3]), torch.cos(paths[:,:,3]), 
+            torch.sin(paths[:,:,4]), torch.cos(paths[:,:,4])
+        ], dim=-1)
+        
+        inter_clean = interactions.clone()
+        inter_clean[inter_clean == -1] = 0
+        x = torch.cat([x_path, inter_clean], dim=-1)
+        x = self.backbone.path_in(x)
+        
+        # Combine and Add Positional Embeddings
+        x = torch.cat([env_emb, prop_emb, x], dim=1)
+        pos = self.backbone.pos_emb(torch.arange(x.size(1), device=x.device))
+        x = x + pos
+        
+        # Transformer pass
+        causal_mask = torch.triu(torch.ones(x.size(1), x.size(1), device=x.device), diagonal=1).bool()
+        return self.backbone.decoder(tgt=x, memory=prefix, tgt_mask=causal_mask)

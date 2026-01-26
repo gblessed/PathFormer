@@ -201,7 +201,7 @@ class MySeqDataLoader(torch.utils.data.Dataset):
 class PreTrainMySeqDataLoader(torch.utils.data.Dataset):
 
     def __init__(self, scenario, tx_sets="all", seed=42, shuffle=False, pad_value=500,
-                 train=True, split_by="users", train_ratio=0.8, sort_by="power"):
+                 train=True, split_by="users", train_ratio=0.8, sort_by="power", normalizers = None, apply_normalizers= []):
         ### get length of dataset
         self.dataset = scenario
         self.Txs = 1
@@ -211,6 +211,8 @@ class PreTrainMySeqDataLoader(torch.utils.data.Dataset):
         self.dataset_filtered = defaultdict(list)
         self.total_length = 0
         scattering_model = { None:0, 'none':0, 'directive':1, }
+        self.normalizers = normalizers
+        self.apply_normalizers = apply_normalizers
         if isinstance(self.dataset.n_ue, int):
         
             self.dataset = [self.dataset]
@@ -289,13 +291,14 @@ class PreTrainMySeqDataLoader(torch.utils.data.Dataset):
                     )
         self.seed = seed
         self.total_length = len(self.dataset_filtered[list(self.dataset_filtered.keys())[0]])
-
-        # boundary = self.dataset[0]['rt_params']['raw_params']['studyarea']['boundary']['data']
-        # self.mins = np.array([boundary[0][0], boundary[0][1],
-        #                      self.dataset[0]['rt_params']['raw_params']['studyarea']['boundary']['values']['zmin']]).astype(np.float32)
-        # self.maxs = np.array([boundary[2][0], boundary[2][1],
-        #                      self.dataset[0]['rt_params']['raw_params']['studyarea']['boundary']['values']['zmax']]).astype(np.float32)
-
+        try:
+            boundary = self.dataset[0]['scene'].bounding_box.bounds
+            self.mins = boundary[0]
+            self.maxs = boundary[1]
+        except:
+            boundary = self.dataset['scene'].bounding_box.bounds
+            self.mins = boundary[0]
+            self.maxs = boundary[1]
     def decode_interaction_to_multilabel(self, inter_code):
         """
         Convert interaction code to multi-label vector [R, D, S, T]
@@ -336,7 +339,17 @@ class PreTrainMySeqDataLoader(torch.utils.data.Dataset):
         
 
         for k in ["tx_pos", "rx_pos"]:
-            prompt.extend(self.dataset_filtered[k][idx])
+            # prompt.extend(self.dataset_filtered[k][idx])
+            if self.normalizers and "pos" in self.apply_normalizers:
+                # vals =  (self.dataset_filtered[k][idx] - self.mins)/ ( self.maxs -  self.mins)
+                vals = self.dataset_filtered[k][idx]
+                vals = (vals -  self.normalizers["rx_pos"]["mean"])/ self.normalizers["rx_pos"]["std"]
+                prompt.extend( vals )
+            
+            else:
+                prompt.extend( (self.dataset_filtered[k][idx] - self.mins)/ ( self.maxs -  self.mins) )
+
+
 
         # Sort paths based on sort_by option
         if self.sort_by == "power":
@@ -366,6 +379,7 @@ class PreTrainMySeqDataLoader(torch.utils.data.Dataset):
                     break
                 elif k == "delay":
                     value = value * 1e6  # convert to us
+
                 elif k == "phase":
                     value = value * (np.pi/180)
                 elif k in ["aoa_az", "aoa_el"]:
@@ -374,6 +388,8 @@ class PreTrainMySeqDataLoader(torch.utils.data.Dataset):
                 elif k == "power":
                     value = value * 0.01
 
+                if k in self.apply_normalizers:
+                    value = (value - self.normalizers[k]["mean"])/ self.normalizers[k]["std"]
                 output_per_step.append(value)
 
             if not broken:

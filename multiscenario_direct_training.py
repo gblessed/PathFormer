@@ -175,31 +175,51 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
                 pred = generated[:T]
                 gt = gt[:T]
 
-                # ---- Compute Metrics ----
-                delay_rmse = torch.mean((pred[:,0] - gt[:,0])**2).sqrt().item()
-                delay_mae = torch.mean(torch.abs(pred[:,0] - gt[:,0])).item()
+   
+                delay_pred = (pred[:,0]  * data_stats["delay"]["std"] ) + data_stats["delay"]["mean"]
+                delay = (gt[:,0] * data_stats["delay"]["std"]) + data_stats["delay"]["mean"]
 
-                power_rmse = torch.mean((pred[:,1]/0.01 - gt[:,1]/0.01)**2).sqrt().item()
-                power_mae = torch.mean((torch.abs(pred[:,1]/0.01 - gt[:,1]/0.01))).item()
+
+                power_pred = (pred[:,1]  * data_stats["power"]["std"] ) + data_stats["power"]["mean"]
+                power = (gt[:,1] * data_stats["power"]["std"]) + data_stats["power"]["mean"]
+
+                phase_pred = (pred[:,2]  * data_stats["phase"]["std"] ) + data_stats["phase"]["mean"]
+                phase = (gt[:,2] * data_stats["phase"]["std"]) + data_stats["phase"]["mean"]
+
+
+                aoa_az_pred = (pred[:,3]  * data_stats["aoa_az"]["std"] ) + data_stats["aoa_az"]["mean"]
+                aoa_az = (gt[:,3] * data_stats["aoa_az"]["std"]) + data_stats["aoa_az"]["mean"]
+              
+                aoa_el_pred = (pred[:,4]  * data_stats["aoa_el"]["std"] ) + data_stats["aoa_el"]["mean"]
+                aoa_el = (gt[:,4] * data_stats["aoa_el"]["std"]) + data_stats["aoa_el"]["mean"]
+
+
+                # ---- Compute Metrics ----
+                delay_rmse = torch.mean((delay_pred - delay)**2).sqrt().item()
+                delay_mae = torch.mean(torch.abs(delay_pred - delay)).item()
+
+                power_rmse = torch.mean((power_pred/0.01 -power/0.01)**2).sqrt().item()
+                power_mae = torch.mean((torch.abs(power_pred/0.01 -power/0.01))).item()
 
 
                 # Phase errors
-                y_hat_angles = (pred[:,2] / (np.pi/180))
-                y_angles = (gt[:,2] / (np.pi/180))
+                y_hat_angles = (phase_pred / (np.pi/180))
+                y_angles = (phase / (np.pi/180))
                 phase_circular_dist = (y_hat_angles - y_angles + 180) % 360 - 180
                 phase_rmse = torch.mean(phase_circular_dist**2).sqrt().item()
                 phase_mae = torch.mean(torch.abs(phase_circular_dist)).item()
 
                 # AoA azimuth errors
-                y_hat_az = (pred[:,3] / (np.pi/180))
-                y_az = (gt[:,3] / (np.pi/180))
+                y_hat_az = (aoa_az_pred / (np.pi/180))
+                y_az = (aoa_az / (np.pi/180))
+
                 az_circular_dist = (y_hat_az - y_az + 180) % 360 - 180
                 az_rmse = torch.mean(az_circular_dist**2).sqrt().item()
                 az_mae = torch.mean(torch.abs(az_circular_dist)).item()
 
                 # AoA elevation errors
-                y_hat_el = (pred[:,4] / (np.pi/180))
-                y_el = (gt[:,4] / (np.pi/180))
+                y_hat_el = (aoa_el_pred / (np.pi/180))
+                y_el = (aoa_el/ (np.pi/180))
                 el_circular_dist = (y_hat_el - y_el + 180) % 360 - 180
                 el_rmse = torch.mean(el_circular_dist**2).sqrt().item()
                 el_mae = torch.mean(torch.abs(el_circular_dist)).item()
@@ -532,6 +552,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                  az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
                  path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
                 
+                
+
                 (total_loss, loss_delay, loss_power, loss_phase,
                 loss_az, loss_el, loss_path_length, loss_interaction,loss_channel) = masked_loss(
                     delay_pred, power_pred, phase_sin_pred, phase_cos_pred,phase_pred,
@@ -661,7 +683,7 @@ for scenario in all_scenarios:
         "PAD_VALUE": 500,
         "USE_WANDB": False,
         "LR":2e-5,
-        "epochs" : 100,
+        "epochs" : 200,
         "interaction_weight": 0.01,  # Weight for interaction loss
         "experiment": f"enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
         "hidden_dim": 512,
@@ -686,14 +708,16 @@ for scenario in all_scenarios:
     os.makedirs("checkpoints2", exist_ok=True)
     checkpoint_path = os.path.join("checkpoints2", checkpoint_path)
     train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
-
+    data_stats = get_dataset_statistics(train_data)
+    
+    train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power", normalizers = data_stats, apply_normalizers =["delay", "power", "phase",  "aoa_az", "aoa_el"] )
     train_loader = torch.utils.data.DataLoader(
         dataset     = train_data,
         batch_size  = config['BATCH_SIZE'],
         shuffle     = True,
         collate_fn= train_data.collate_fn
         )
-    val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power")
+    val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power", normalizers = data_stats, apply_normalizers =["delay", "power", "phase",  "aoa_az", "aoa_el"])
     val_loader = torch.utils.data.DataLoader(
         dataset     = val_data,
         batch_size  = config['BATCH_SIZE'],
