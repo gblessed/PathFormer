@@ -43,7 +43,7 @@ import numpy as np
 import pandas as pd
 import os
 
-csv_log_file = "fine_tune_final_scenario_results.csv"
+
 
 # %%
 scenario = 'city_89_nairobi_3p5'
@@ -70,6 +70,7 @@ config = {
     "epochs" : 50,
     "interaction_weight": 0.01,  # Weight for interaction loss
     "experiment": f"true_enc_pre_mixed_train_all_scenarios_interaction_weight_0.01_better_scheduler",
+    "base_experiment": f"true_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
     "hidden_dim": 512,
     "n_layers": 8,
     "n_heads": 8,
@@ -545,7 +546,7 @@ for scenario in all_scenarios:
         "base_experiment": f"true_enc_pre_mixed_train_all_scenarios_interaction_weight_0.01_better_scheduler",
         "experiment": f"finetune_{scenario}_interaction_weight_0.01",
         "finetune_scenario": f"{scenario}",
-        "experiment": f"true_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
+        "experiment": f"localization",
         "hidden_dim": 512,
         "n_layers": 8,
         "n_heads": 8,

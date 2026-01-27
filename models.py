@@ -610,6 +610,63 @@ class PathDecoder(nn.Module):
             az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
             pathcounts, interaction_logits)
 
+class PathFormerBeamPredictor(nn.Module):
+    def __init__(self, pretrained_backbone, hidden_dim=512, n_beams=64):
+        super().__init__()
+        self.backbone = pretrained_backbone
+        self.beam_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim//2),
+            nn.GELU(),
+            # nn.Dropout(0.1),
+            nn.Linear(hidden_dim//2, n_beams)
+        )
+    def forward(self, prompts, paths, interactions, env_prop, env):
+        # Reuse extract_backbone_features from PathFormerLocalizer if available
+        B = paths.size(0)
+        h = self.backbone.decoder  # we will call extractor similar to your localizer
+        # Use same extract logic as PathFormerLocalizer to obtain h
+        h_full = self.backbone_forward_to_hidden(prompts, paths, interactions, env_prop, env)
+        env_len = 1 + env_prop.size(1)
+        path_tokens = h_full[:, env_len:, :]
+        summary = torch.mean(path_tokens, dim=1)  # (B, hidden_dim)
+        logits = self.beam_head(summary)          # (B, n_beams)
+        return logits
+
+    def backbone_forward_to_hidden(self, prompts, paths, interactions, env_prop, env):
+        # copy your localizer's extract_backbone_features body (or call it if available)
+        return self.extract_backbone_features(prompts, paths, interactions, env_prop, env)
+    def extract_backbone_features(self, prompts, paths, interactions, env_prop, env):
+        # This mirrors the internal logic of your PathDecoderEnv.forward
+        B, T2, _ = env_prop.shape
+        env_emb = self.backbone.environment_embed(env).unsqueeze(1)
+        prop_emb = self.backbone.environment_prop_embed(env_prop)
+        
+        # Masked prefix logic
+        prefix_raw = self.backbone.prompt_to_prefix(prompts)
+        prefix = prefix_raw.view(B, self.backbone.prefix_len, self.backbone.hidden_dim)
+
+        # Path Embedding (matching your 12-dim input logic)
+        phase = paths[:,:,2]
+        x_path = torch.stack([
+            paths[:,:,0], paths[:,:,1], torch.sin(phase), torch.cos(phase),
+            torch.sin(paths[:,:,3]), torch.cos(paths[:,:,3]), 
+            torch.sin(paths[:,:,4]), torch.cos(paths[:,:,4])
+        ], dim=-1)
+        
+        inter_clean = interactions.clone()
+        inter_clean[inter_clean == -1] = 0
+        x = torch.cat([x_path, inter_clean], dim=-1)
+        x = self.backbone.path_in(x)
+        
+        # Combine and Add Positional Embeddings
+        x = torch.cat([env_emb, prop_emb, x], dim=1)
+        pos = self.backbone.pos_emb(torch.arange(x.size(1), device=x.device))
+        x = x + pos
+        
+        # Transformer pass
+        causal_mask = torch.triu(torch.ones(x.size(1), x.size(1), device=x.device), diagonal=1).bool()
+        return self.backbone.decoder(tgt=x, memory=prefix, tgt_mask=causal_mask)
+    # You can implement backbone_extract_features by calling the same logic as PathFormerLocalizer.extract_backbone_features
 
 
 class PathFormerLocalizer(nn.Module):

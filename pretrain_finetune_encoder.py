@@ -764,7 +764,7 @@ for scenario in all_scenarios:
 
 
     train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
-
+    data_stats = get_dataset_statistics(train_data)
 
     for feature, val in data_stats.items():
         print(f"--- {feature} ---")

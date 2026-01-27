@@ -696,3 +696,39 @@ def get_dataset_statistics(dataloader_obj):
         }
     
     return stats
+
+
+
+
+
+############Beam Prediction Things############
+def make_dft_codebook(B=8, dtype=np.complex64):
+    params = ChannelParameters()
+
+    az_t = np.linspace(-np.pi, np.pi, B, endpoint=False, dtype=np.float32)
+    el_t = np.linspace(-np.pi, np.pi, B, endpoint=False, dtype=np.float32)
+    az_new = []
+    el_new = []
+    for az in az_t:
+        for el in el_t:
+            az_new.append(az)
+            el_new.append(el)
+    az_new = torch.tensor(az_new).unsqueeze(1)
+    el_new = torch.tensor(el_new).unsqueeze(1)
+    array_response = compute_single_array_response_torch(params.bs_antenna,  az_new, el_new)
+
+    return array_response.squeeze(2).T ## Tx x (B**2) 
+    
+def compute_beam_label_from_channel(H, S):
+    """
+    H: np.array shape (Nt, K)  dtype complex
+    S: np.array shape (Nt, B)  dtype complex (codebook)
+    returns: best_beam_index (int), Prx array (B,)
+    """
+    # Compute Y = S^H * H  -> shape (B, K)
+    # Using conjugate transpose of S
+    Y = np.conj(S.T) @ H   # (B, K)
+    Prx = torch.sum(torch.abs(Y)**2, dim=2)  # (B,)
+    best = torch.argmax(Prx, dim=1)
+    return best, Prx
+############Beam Prediction Things############
