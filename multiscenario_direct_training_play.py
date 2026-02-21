@@ -33,9 +33,9 @@ from sklearn.metrics import mean_squared_error
 import numpy as np
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from models import PathDecoder, GPTPathDecoder
-from dataset.dataloaders import PreTrainMySeqDataLoader
-from utils.utils import *
+from models_play import PathDecoder, GPTPathDecoder, PathDecoderDelta
+from dataset.dataloaders_play import PreTrainMySeqDataLoader
+from utils.utils_play import *
 
 from tqdm import tqdm
 import torch
@@ -63,7 +63,7 @@ dm.info()
 # %%
 config = {
     "BATCH_SIZE":128,
-    "PAD_VALUE": 0,
+    "PAD_VALUE": 0,  # Padding value; use path_padding_mask for loss masking (avoids large sentinel in representations)
     "USE_WANDB": False,
     "LR":2e-5,
     "epochs" : 100,
@@ -72,9 +72,6 @@ config = {
     "hidden_dim": 512,
     "n_layers": 8,
     "n_heads": 8,
-    # Target noise for generalization
-    "TARGET_NOISE_PROB": 0.2,
-    "TARGET_NOISE_PARAMS": None,  # None = defaults; or e.g. {"delay": {"mean": 0, "std": 0.05}, "power": {"mean": 0, "std": 0.002}, ...}
 }
 
 
@@ -88,7 +85,8 @@ config = {
 
 
 # %%
-train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
+# Paths sorted by delay (ascending) for encoder-first + decoder-deltas training
+train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="delay")
 
 train_loader = torch.utils.data.DataLoader(
     dataset     = train_data,
@@ -96,7 +94,7 @@ train_loader = torch.utils.data.DataLoader(
     shuffle     = True,
     collate_fn= train_data.collate_fn
     )
-val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power")
+val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="delay")
 val_loader = torch.utils.data.DataLoader(
     dataset     = val_data,
     batch_size  = config['BATCH_SIZE'],
@@ -105,7 +103,7 @@ val_loader = torch.utils.data.DataLoader(
     )
 
 for item in train_loader:
-    print(f"Prompt shape: {item[0].shape}, Paths shape: {item[1].shape}, Num paths shape: {item[2].shape}")
+    print(f"Prompt shape: {item[0].shape}, Paths shape: {item[1].shape}, Num paths shape: {item[2].shape}, path_padding_mask: {item[6].shape}")
     
     break
 
@@ -117,7 +115,7 @@ print("Train Batches        : ", train_loader.__len__())
 print("No. of Train Points   : ", val_data.__len__())
 print("Val Batches          : ", val_loader.__len__())
 
-def compute_stop_metrics(path_count, targets, pad_value=0):
+def compute_stop_metrics(path_count, targets, pad_value=500):
     """
 
     Args:
@@ -126,7 +124,22 @@ def compute_stop_metrics(path_count, targets, pad_value=0):
 
     rmse = np.sqrt(mean_squared_error(path_count.cpu().numpy(), targets.squeeze().cpu().numpy()))
     
-    return rmse 
+    return rmse
+
+
+def make_delta_targets(paths_out):
+    """
+    Build targets for encoder-first-step + decoder-deltas training:
+    - First step (t=0): actual values (encoder predicts first path metrics).
+    - Subsequent steps (t>=1): differences from previous step (decoder predicts deltas).
+    paths_out: (B, T, 5) — delay, power, phase, aoa_az, aoa_el.
+    Returns: (B, T, 5) same shape; first row = actuals, rest = deltas.
+    """
+    targets = paths_out.clone()
+    T = paths_out.size(1)
+    if T > 1:
+        targets[:, 1:, :] = paths_out[:, 1:, :] - paths_out[:, :-1, :]
+    return targets 
 
 
 
@@ -167,35 +180,34 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
                 generated, path_lengths_pred, inter_str_pred = generate_paths_no_env(model, prompts[b], max_steps=max_generate)
 
                 generated = generated.cuda()
-                # ground truth: delay, power, phase, aoa_az, aoa_el
-                # gt = paths[b][1:, :5]
+                # generate_paths_no_env returns actuals (encoder first step + decoder deltas accumulated)
+                pred_actuals = generated  # (T, 5) actual values
 
-                # Mask padded values
-                # valid_mask = (gt[:,0] != train_data.pad_value)
+                # ground truth: delay, power, phase, aoa_az, aoa_el (use path length, not pad value, so delay=0 is safe)
                 n_valid = int(round(path_lengths[b].item() * 25))
                 gt = paths[b][1:1 + n_valid, :5]
 
-                T = min(len(gt), len(generated))
-                pred = generated[:T]
+                T = min(len(gt), len(pred_actuals))
+                pred = pred_actuals[:T]
                 gt = gt[:T]
 
-   
-                # delay_pred = (pred[:,0]  * data_stats["delay"]["std"] ) + data_stats["delay"]["mean"]
-                # delay = (gt[:,0] * data_stats["delay"]["std"]) + data_stats["delay"]["mean"]
+                # Un-normalize to original scale for RMSE on actual values
+                # delay_pred = (pred[:,0]  * (data_stats["delay"]["max"] - data_stats["delay"]["min"]) ) + data_stats["delay"]["min"]
+                # delay = (gt[:,0] * (data_stats["delay"]["max"] -  data_stats["delay"]["min"])) + data_stats["delay"]["min"]
 
 
-                # power_pred = (pred[:,1]  * data_stats["power"]["std"] ) + data_stats["power"]["mean"]
-                # power = (gt[:,1] * data_stats["power"]["std"]) + data_stats["power"]["mean"]
+                # power_pred = (pred[:,1]  * (data_stats["power"]["max"]  - data_stats["power"]["min"] )) + data_stats["power"]["min"]
+                # power = (gt[:,1] * (data_stats["power"]["max"]  - data_stats["power"]["min"])) + data_stats["power"]["min"]
 
-                # phase_pred = (pred[:,2]  * data_stats["phase"]["std"] ) + data_stats["phase"]["mean"]
-                # phase = (gt[:,2] * data_stats["phase"]["std"]) + data_stats["phase"]["mean"]
+                # phase_pred = (pred[:,2]  * (data_stats["phase"]["max"] - data_stats["phase"]["min"] )) + data_stats["phase"]["min"]
+                # phase = (gt[:,2] * (data_stats["phase"]["max"] - data_stats["phase"]["min"])) + data_stats["phase"]["min"]
 
 
-                # aoa_az_pred = (pred[:,3]  * data_stats["aoa_az"]["std"] ) + data_stats["aoa_az"]["mean"]
-                # aoa_az = (gt[:,3] * data_stats["aoa_az"]["std"]) + data_stats["aoa_az"]["mean"]
+                # aoa_az_pred = (pred[:,3]  * (data_stats["aoa_az"]["max"] - data_stats["aoa_az"]["min"]) ) + data_stats["aoa_az"]["min"]
+                # aoa_az = (gt[:,3] * (data_stats["aoa_az"]["max"] - data_stats["aoa_az"]["min"])) + data_stats["aoa_az"]["min"]
               
-                # aoa_el_pred = (pred[:,4]  * data_stats["aoa_el"]["std"] ) + data_stats["aoa_el"]["mean"]
-                # aoa_el = (gt[:,4] * data_stats["aoa_el"]["std"]) + data_stats["aoa_el"]["mean"]
+                # aoa_el_pred = (pred[:,4]  * (data_stats["aoa_el"]["max"] -  data_stats["aoa_el"]["min"])) + data_stats["aoa_el"]["min"]
+                # aoa_el = (gt[:,4] *(data_stats["aoa_el"]["max"] -  data_stats["aoa_el"]["min"])) + data_stats["aoa_el"]["min"]
 
                 delay_pred = pred[:,0]  
                 # delay_pred = torch.cumsum(delay_pred, dim=0)
@@ -203,13 +215,26 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
 
 
                 power_pred = pred[:,1]  
+                # power_pred = torch.cumsum(power_pred, dim=0)
                 power = gt[:,1] 
+
                 phase_pred = pred[:,2]
+                # phase_pred = torch.cumsum(phase_pred, dim=0)
+
                 phase = gt[:,2]
+
+
                 aoa_az_pred = pred[:,3]  
-                aoa_az = gt[:,3]           
-                aoa_el_pred = pred[:,4]    
+                # aoa_az_pred = torch.cumsum(aoa_az_pred, dim=0)
+
+                aoa_az = gt[:,3] 
+              
+                aoa_el_pred = pred[:,4]
+                # aoa_el_pred = torch.cumsum(aoa_el_pred, dim=0)
+
                 aoa_el = gt[:,4] 
+            
+
                 # ---- Compute Metrics ----
                 delay_rmse = torch.mean((delay_pred - delay)**2).sqrt().item()
                 delay_mae = torch.mean(torch.abs(delay_pred - delay)).item()
@@ -356,19 +381,18 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
 
 def show_example(model, val_loader, sample_index=0, k=25, plot=True):
     model.eval()
-    prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask = next(iter(val_loader))
+    batch = next(iter(val_loader))
+    prompts, paths, path_lengths, interactions = batch[0], batch[1], batch[2], batch[3]
     
     prompts = prompts.cuda()
     paths = paths.cuda()
-    path_lengths = path_lengths.cuda()
     
-    pred_paths, path_lengths_pred, inter_str_pred = generate_paths_no_env(model, prompts[sample_index])
+    pred_paths, path_lengths_pred,inter_str_pred= generate_paths_no_env(model, prompts[sample_index])
     
 
     pred = pred_paths[0]  # (T,3)
-    # Use path length to get valid positions (mask-based; pad value is 0)
     n_valid = int(round(path_lengths[sample_index].item() * 25))
-    gt = paths[sample_index][1:1 + n_valid, :3]  # Extract only 3D components (T,3)
+    gt = paths[sample_index][1:1 + n_valid, :3]  # use path length so delay=0 is safe
 
     print("\n--- Ground Truth Length {} ".format(len(gt)))
 
@@ -446,27 +470,31 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
         train_loss_el = []
         train_ch_nmse = []
         pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False)
-        for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:  # NEW: added interactions
+        for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:  # path_padding_mask: (B, T), True=valid
             prompts = prompts.cuda()
             paths = paths.cuda()
             path_lengths = path_lengths.cuda()
-            interactions = interactions.cuda()  # NEW
+            interactions = interactions.cuda()
             path_padding_mask = path_padding_mask.cuda()
-
+            
             paths_in = paths[:, :-1, :]
-            p_noise = config.get("TARGET_NOISE_PROB", 0.0)
-            if p_noise > 0:
-                paths_in = add_noise_to_paths(paths_in, path_padding_mask[:, :-1], p_noise=p_noise,
-                                              noise_params=config.get("TARGET_NOISE_PARAMS"))
             interactions_in = interactions[:, :-1, :]
 
             paths_out = paths[:, 1:, :]
-            interactions_out = interactions[:, 1:, :]  # NEW: shift targets
+            interactions_out = interactions[:, 1:, :]
+            # Encoder predicts first step (actuals); decoder predicts deltas for subsequent steps
+            # print(f"paths_out= {paths_out[0]} {paths_out.shape}")
+
+            paths_out = make_delta_targets(paths_out)
+            # print(f"paths_out_delta= {paths_out[0]}")
 
             (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
              az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
              path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
+            
 
+
+            
             (total_loss, loss_delay, loss_power, loss_phase,
              loss_az, loss_el, loss_path_length, loss_interaction,loss_channel) = masked_loss(
                 delay_pred, power_pred, phase_sin_pred, phase_cos_pred,phase_pred,
@@ -501,7 +529,7 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                 # gt_channels = mycomputer.compute_channels(power_linear,delay_secs, phase, az, el ,kwargs=None )
    
 
-
+            
                 # ch_nmse = compute_channel_nmse(predicted_channels, gt_channels)
             train_ch_nmse.append(ch_nmse)
             train_losses.append(total_loss.item())
@@ -531,8 +559,7 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                 "ch_nmse":f"{ch_nmse:.4f}",
                 "lr": f"{current_lr:.2e}"
             })
-
-        scheduler.step()
+        scheduler.step()      
         avg_train_loss = np.mean(train_losses)
         avg_train_delay = np.mean(train_loss_delay)
         avg_train_power = np.mean(train_loss_power)
@@ -559,22 +586,19 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
             pbar = tqdm(val_loader, desc=f"Epoch {epoch} [Val]", leave=False)
             # prepare val aoa loss lists
 
-            for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:  # NEW
+            for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:
                 prompts = prompts.cuda()
                 paths = paths.cuda()
                 path_lengths = path_lengths.cuda()
-                interactions = interactions.cuda()  # NEW
+                interactions = interactions.cuda()
                 path_padding_mask = path_padding_mask.cuda()
 
                 paths_in = paths[:, :-1, :]
-                p_noise = config.get("TARGET_NOISE_PROB", 0.0)
-                if p_noise > 0:
-                    paths_in = add_noise_to_paths(paths_in, path_padding_mask[:, :-1], p_noise=p_noise,
-                                                  noise_params=config.get("TARGET_NOISE_PARAMS"))
                 interactions_in = interactions[:, :-1, :]
 
                 paths_out = paths[:, 1:, :]
-                interactions_out = interactions[:, 1:, :]  # NEW: shift targets
+                interactions_out = interactions[:, 1:, :]
+                paths_out = make_delta_targets(paths_out)
 
                 (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
                  az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
@@ -699,10 +723,10 @@ if config["USE_WANDB"]:
 # %%
 all_scenarios = ['city_47_chicago_3p5', 'city_23_beijing_3p5', 'city_91_xiangyang_3p5', 'city_17_seattle_3p5_s', 'city_12_fortworth_3p5', 'city_92_sãopaulo_3p5', 'city_35_san_francisco_3p5', 'city_10_florida_villa_7gp_1758095156175', 'city_19_oklahoma_3p5_s', 'city_74_chiyoda_3p5']
 
-for scenario in all_scenarios:
+for scenario in all_scenarios[:1]:
 # %%
     # model = GPTPathDecoder().to(device)
-    model = PathDecoder(hidden_dim=config["hidden_dim"], n_layers = config["n_layers"], n_heads=config["n_heads"]).to(device)
+    model = PathDecoderDelta(hidden_dim=config["hidden_dim"], n_layers = config["n_layers"], n_heads=config["n_heads"]).to(device)
 
     print("Total trainable parameters:", count_parameters(model))
     dataset = dm.load(scenario, )
@@ -712,14 +736,13 @@ for scenario in all_scenarios:
         "PAD_VALUE": 0,
         "USE_WANDB": False,
         "LR":2e-5,
-        "epochs" : 300,
+        "epochs" : 100,
         "interaction_weight": 0.01,  # Weight for interaction loss
-        "experiment": f"noise_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
+        "experiment": f"enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
         "hidden_dim": 512,
         "n_layers": 8,
         "n_heads": 8,
-        "TARGET_NOISE_PROB": 0.2,
-        "TARGET_NOISE_PARAMS": None,
+        "sort_by": "delay"
     }
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["LR"])
@@ -738,17 +761,17 @@ for scenario in all_scenarios:
     checkpoint_path = f"{config['experiment']}_best_model_checkpoint.pth"
     os.makedirs("checkpoints2", exist_ok=True)
     checkpoint_path = os.path.join("checkpoints2", checkpoint_path)
-    # train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
-    # data_stats = get_dataset_statistics(train_data)
+    train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by=config["sort_by"], apply_normalizers =["power"] , pad_value=config["PAD_VALUE"])                                                                              
+    data_stats = get_dataset_statistics(train_data)
     
-    train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power", normalizers = None, apply_normalizers =[], pad_value=config["PAD_VALUE"] )
+    train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by=config["sort_by"], normalizers = data_stats, apply_normalizers =["power"] , pad_value=config["PAD_VALUE"])
     train_loader = torch.utils.data.DataLoader(
         dataset     = train_data,
         batch_size  = config['BATCH_SIZE'],
         shuffle     = True,
         collate_fn= train_data.collate_fn
         )
-    val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power", normalizers = None, apply_normalizers =[], pad_value=config["PAD_VALUE"] )
+    val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by=config["sort_by"], normalizers = data_stats, apply_normalizers =["power"], pad_value=config["PAD_VALUE"])
     val_loader = torch.utils.data.DataLoader(
         dataset     = val_data,
         batch_size  = config['BATCH_SIZE'],
@@ -757,7 +780,7 @@ for scenario in all_scenarios:
         )
 
     # Train
-    train_with_interactions(model, train_loader, val_loader, config, train_data)
+    # train_with_interactions(model, train_loader, val_loader, config, train_data)
     
     # %% [markdown]
     # 

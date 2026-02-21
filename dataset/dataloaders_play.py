@@ -3,7 +3,7 @@ from collections import defaultdict
 import numpy as np
 from torch.utils.data import Dataset, ConcatDataset, DataLoader
 import deepmimo as dm
-# %%
+
 class MySeqDataLoader(torch.utils.data.Dataset):
 
     def __init__(self, scenario, tx_sets="all", seed=42, shuffle=False, pad_value=0, 
@@ -340,14 +340,14 @@ class PreTrainMySeqDataLoader(torch.utils.data.Dataset):
 
         for k in ["tx_pos", "rx_pos"]:
             # prompt.extend(self.dataset_filtered[k][idx])
+            vals = self.dataset_filtered[k][idx]
             if self.normalizers and "pos" in self.apply_normalizers:
                 # vals =  (self.dataset_filtered[k][idx] - self.mins)/ ( self.maxs -  self.mins)
-                vals = self.dataset_filtered[k][idx]
                 vals = (vals -  self.normalizers["rx_pos"]["mean"])/ self.normalizers["rx_pos"]["std"]
                 prompt.extend( vals )
             
             else:
-                prompt.extend( (self.dataset_filtered[k][idx] - self.mins)/ ( self.maxs -  self.mins) )
+                prompt.extend( vals)
 
 
 
@@ -389,7 +389,9 @@ class PreTrainMySeqDataLoader(torch.utils.data.Dataset):
                     value = value * 0.01
 
                 if k in self.apply_normalizers:
-                    value = (value - self.normalizers[k]["mean"])/ self.normalizers[k]["std"]
+                    # value = (value - self.normalizers[k]["mean"])/ self.normalizers[k]["std"]
+                    value = (value - self.normalizers[k]["min"])/ (self.normalizers[k]["max"] - self.normalizers[k]["min"])
+
                 output_per_step.append(value)
 
             if not broken:
@@ -417,13 +419,12 @@ class PreTrainMySeqDataLoader(torch.utils.data.Dataset):
     def collate_fn(self, batch):
         batch_prompts = torch.cat([i[0].unsqueeze(0) for i in batch], dim=0)
         batch_paths = [i[1] for i in batch]
-        
         path_lengths = torch.tensor([p.size(0) for p in batch_paths], dtype=torch.long)
         max_len = path_lengths.max().item()
-        path_padding_mask = (torch.arange(max_len) < path_lengths.unsqueeze(1))
-
         batch_paths = torch.nn.utils.rnn.pad_sequence(batch_paths, batch_first=True,
                                                        padding_value=self.pad_value)
+        # Explicit padding mask: True = valid position, False = padding (so loss uses mask; pad_value can be 0)
+        path_padding_mask = (torch.arange(max_len) < path_lengths.unsqueeze(1))
         batch_num_paths = [i[2] for i in batch]
         batch_num_paths = torch.nn.utils.rnn.pad_sequence(batch_num_paths, batch_first=True,
                                                            padding_value=0)
@@ -472,7 +473,7 @@ def create_mixed_dataloader(all_scenarios, config, train=True):
         DataLoader with mixed scenario batches
     """
     scenario_datasets = []
-    pad_value = config.get('PAD_VALUE', 500)
+    pad_value = config.get('PAD_VALUE', 0)
     
     for scenario in all_scenarios:
         try:
@@ -512,9 +513,12 @@ def create_mixed_dataloader(all_scenarios, config, train=True):
         batch_prompts = torch.stack([item[0] for item in batch])
         
         batch_paths = [item[1] for item in batch]
+        path_lengths = torch.tensor([p.size(0) for p in batch_paths], dtype=torch.long)
+        max_len = path_lengths.max().item()
         batch_paths = torch.nn.utils.rnn.pad_sequence(
             batch_paths, batch_first=True, padding_value=pad_value
         )
+        path_padding_mask = (torch.arange(max_len) < path_lengths.unsqueeze(1))
         
         batch_num_paths = torch.stack([item[2] for item in batch])
         
@@ -523,17 +527,9 @@ def create_mixed_dataloader(all_scenarios, config, train=True):
             batch_interactions, batch_first=True, padding_value=-1
         )
         batch_environment = torch.cat([i[4].unsqueeze(0) for i in batch], dim=0)
-        # print("ENV?", batch[0][5].shape )
-        # batch_environment_material_props = torch.cat([i[5].unsqueeze(0) for i in batch], dim=0)
         batch_environment_material_props = torch.nn.utils.rnn.pad_sequence([i[5] for i in batch], batch_first=True,
                                                            padding_value=0)
-        return batch_prompts, batch_paths, batch_num_paths, batch_interactions, batch_environment, batch_environment_material_props
-
-        
-        # Optional: return scenario names for tracking
-        scenario_names = [item[4] for item in batch]
-        
-        return batch_prompts, batch_paths, batch_num_paths, batch_interactions
+        return batch_prompts, batch_paths, batch_num_paths, batch_interactions, batch_environment, batch_environment_material_props, path_padding_mask
     
     # Create the mixed dataloader
     mixed_loader = DataLoader(

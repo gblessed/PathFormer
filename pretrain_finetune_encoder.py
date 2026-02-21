@@ -33,9 +33,9 @@ from sklearn.metrics import mean_squared_error
 import numpy as np
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from models import PathDecoder, GPTPathDecoder, PathDecoderEnv
-from dataset.dataloaders import PreTrainMySeqDataLoader
-from utils.utils import *
+from models_play import PathDecoder, GPTPathDecoder, PathDecoderEnv
+from dataset.dataloaders_play import PreTrainMySeqDataLoader
+from Pathformer.utils.utils import *
 
 from tqdm import tqdm
 import torch
@@ -722,7 +722,7 @@ for scenario in all_scenarios:
 
     print("Total trainable parameters:", count_parameters(model))
     dataset = dm.load(scenario, )
-    print(f"######### Training on Scenario {scenario}  #########")
+    print(f"######### Finetuning on Scenario {scenario}  #########")
     config = {
         "BATCH_SIZE":128,
         "PAD_VALUE": 500,
@@ -731,7 +731,7 @@ for scenario in all_scenarios:
         "unfreezing":50,
         "epochs" : 150,
         "interaction_weight": 0.01,  # Weight for interaction loss
-        "base_experiment": f"longer_true_enc_pre_mixed_train_all_scenarios_interaction_weight_0.01_better_scheduler",
+        "base_experiment": f"true_enc_pre_mixed_train_all_scenarios_interaction_weight_0.01_better_scheduler",
         "experiment": f"finetune_{scenario}_interaction_weight_0.01",
         "finetune_scenario": f"{scenario}",
         "experiment": f"true_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",

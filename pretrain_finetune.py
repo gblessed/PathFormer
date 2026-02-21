@@ -46,7 +46,7 @@ import random
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 import wandb
-from models import GPTPathDecoderEnv
+from models_play import GPTPathDecoderEnv
 
 # %%
 scenario = 'city_0_newyork_3p5'

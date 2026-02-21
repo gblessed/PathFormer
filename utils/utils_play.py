@@ -15,6 +15,20 @@ from typing import Tuple, Optional
 from numpy.typing import NDArray
 
 criterion =  torch.nn.MSELoss()
+
+def beta_nll(mu, phi, y):
+    mu = mu.squeeze(-1)
+    phi = phi.squeeze(-1)
+    y = y.clamp(1e-6,1-1e-6 )
+
+    # print(f"mu: {mu.shape}, y:{y.shape}")
+    alpha = mu * phi
+    beta = (1 - mu) * phi
+    return (
+        (alpha - 1) * torch.log(y) +
+        (beta - 1) * torch.log(1 - y) -
+        (torch.lgamma(alpha) + torch.lgamma(beta) - torch.lgamma(alpha + beta))
+    )
 def generate_paths(model, prompt, env, env_prop, max_steps=25, stop_threshold=0.5):
     """
     Generate paths autoregressively.
@@ -65,6 +79,8 @@ def generate_paths(model, prompt, env, env_prop, max_steps=25, stop_threshold=0.
 def generate_paths_no_env(model, prompt, max_steps=25, stop_threshold=0.5):
     """
     Generate paths autoregressively.
+    Step 0: encoder predicts first path actuals. Steps 1+: decoder predicts deltas; actual_t = actual_{t-1} + delta_t.
+    Returns (T, 5) actual values (not deltas).
     """
     model.eval()
     prompt = prompt.unsqueeze(0).cuda()  # (1, prompt_dim)
@@ -76,34 +92,39 @@ def generate_paths_no_env(model, prompt, max_steps=25, stop_threshold=0.5):
     outputs = []
     outputs_inter_str = []
 
+    last_actual = None  # (1, 5) running actuals for delta accumulation
+
     for t in range(max_steps):
-        # Forward pass - unpack expanded outputs (including aoa preds)
+        # Forward: position 0 = encoder (actual), positions 1+ = decoder (deltas)
         d, p, s, c, ph, az_s, az_c, az, el_s, el_c, el, pathcounts, inter_str_logits = model(prompt, cur, inter_str)
+        # All preds (B, T); take last timestep
+        d_t = d[0, -1].unsqueeze(0) if d.dim() == 2 else d[:, -1]
+        p_t = p[0, -1].unsqueeze(0) if p.dim() == 2 else p[:, -1]
+        ph_t = ph[0, -1].unsqueeze(0) if ph.dim() == 2 else ph[:, -1]
+        az_t = az[0, -1].unsqueeze(0) if az.dim() == 2 else az[:, -1]
+        el_t = el[0, -1].unsqueeze(0) if el.dim() == 2 else el[:, -1]
+        inter_logits_t = inter_str_logits[:, -1]
 
-        # Get last timestep predictions
-        d_t = d[:, -1]           # (1,)
-        p_t = p[:, -1]           # (1,)
-        ph_t = ph[:, -1]         # (1,)
-        az_t = az[:, -1]
-        el_t = el[:, -1]
-        inter_logits_t = inter_str_logits[:, -1]  # (1, 4)
+        if t == 0:
+            # Encoder output = first path actuals
+            step_actual = torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1)  # (1, 5)
+        else:
+            # Decoder output = delta; actual_t = actual_{t-1} + delta_t
+            delta = torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1)
+            step_actual = last_actual + delta
 
-        # Convert logits to binary predictions
-        inter_pred_t = (torch.sigmoid(inter_logits_t) > 0.5).float()  # (1, 4) - binary [0, 1]
+        last_actual = step_actual
+        inter_pred_t = (torch.sigmoid(inter_logits_t) > 0.5).float()
 
-        # Store outputs (delay, power, phase, aoa_az, aoa_el)
-        outputs.append(torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1))
+        outputs.append(step_actual.squeeze(0))
         outputs_inter_str.append(inter_pred_t)
 
-        # Append predictions for next iteration
-        next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1).unsqueeze(1)  # (1, 1, 5)
+        next_path = step_actual.unsqueeze(1)
         cur = torch.cat([cur, next_path], dim=1)
+        inter_str = torch.cat([inter_str, inter_pred_t.unsqueeze(1)], dim=1)
 
-        # Use binary predictions for interactions
-        inter_str = torch.cat([inter_str, inter_pred_t.unsqueeze(1)], dim=1)  # (1, t+2, 4)
-
-    return (torch.stack(outputs, dim=1).squeeze(0).detach().cpu(),  # (T, 5)
-            pathcounts, 
+    return (torch.stack(outputs, dim=0).detach().cpu(),  # (T, 5)
+            pathcounts,
             torch.stack(outputs_inter_str, dim=1).squeeze(0).detach().cpu())  # (T, 4)
 def masked_loss_pre_train(delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
                 path_length_predict, interaction_logits, targets, path_length_targets,
@@ -121,9 +142,7 @@ def masked_loss_pre_train(delay_pred, power_pred, sin_pred, cos_pred, phase_pred
     cosp = torch.cos(phase_t)
 
     # Mask for valid paths
-
     mask = (delay_t != pad_value)
-
 
     # Existing losses
     loss_delay = ((delay_pred - delay_t)**2)[mask].mean()
@@ -163,7 +182,8 @@ def masked_loss_pre_train(delay_pred, power_pred, sin_pred, cos_pred, phase_pred
 def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
                 az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred,el_pred,
                 path_length_predict, interaction_logits, targets, path_length_targets,
-                interaction_targets, finetune=None, pad_value=500, interaction_weight=0.1,path_padding_mask=None):
+                interaction_targets, finetune=None, pad_value=500, interaction_weight=0.1,
+                path_padding_mask=None):
     """
     Added interaction prediction loss as auxiliary task.
     
@@ -171,6 +191,7 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
         interaction_logits: (B, T, 4) - logits for [R, D, S, T]
         interaction_targets: (B, T, 4) - binary labels, -1 for invalid
         interaction_weight: weight for interaction loss
+        path_padding_mask: (B, T_path) optional; True = valid position. If given, used instead of pad_value to mask loss (avoids large pad_value in representations).
     """
     delay_t = targets[:, :, 0]
     power_t = targets[:, :, 1]
@@ -187,24 +208,21 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
     sin_el_t = torch.sin(el_t)
     cos_el_t = torch.cos(el_t)
     
-    # Mask for valid paths
-    # Mask for valid paths
-
-    # print(f"padding mask: {path_padding_mask[0]}")
-
-
+    # Mask for valid paths: use explicit mask if provided (recommended when pad_value=0), else sentinel value
     if path_padding_mask is not None:
         # path_padding_mask is (B, T_path); targets are paths_out so (B, T_path-1, 5)
         mask = path_padding_mask[:, 1:]
     else:
         mask = (delay_t != pad_value)
 
-
     # Existing losses
 
 
-    loss_delay = ((delay_pred - delay_t)**2)[mask].mean()
+    loss_delay = ((delay_pred - delay_t)**2)[mask].mean()     +  ((torch.cumsum(delay_pred, dim=1) - torch.cumsum(delay_t, dim=1))**2)[mask].mean()
     loss_power = ((power_pred - power_t)**2)[mask].mean()
+    # loss_delay =  -torch.mean(beta_nll(delay_pred[0], delay_pred[1], delay_t)[mask])
+    # loss_power =  -torch.mean(beta_nll(power_pred[0], power_pred[1], power_t)[mask])
+
     loss_sin = ((phase_sin_pred - sinp)**2)[mask].mean()
     loss_cos = ((phase_cos_pred - cosp)**2)[mask].mean()
     loss_phase = (loss_sin + loss_cos) / 2
@@ -239,18 +257,21 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
     
     total_loss = (loss_delay + loss_power + loss_phase + loss_az + loss_el +
                   loss_path_length + interaction_weight * loss_interaction)
+    total_loss = loss_delay
+    
     channel_loss = 0
     params = ChannelParameters()
     if finetune == "channel_estimation":
         delay_secs = delay_t/ 1e6
+        # Identify padding positions to zero out: use explicit mask if provided
         if path_padding_mask is not None:
-            mask = ~path_padding_mask[:, 1:]  # True = padding (invert: mask True = invalid)
+            pad_mask = ~path_padding_mask[:, 1:]
         else:
-            mask = delay_secs == (pad_value / 1e6)
-        power_t = power_t.masked_fill(mask, 0)
+            pad_mask = delay_secs == (pad_value / 1e6)
+        power_t = power_t.masked_fill(pad_mask, 0)
         phase_t = torch.rad2deg(phase_t)
         power_linear = 10**( (power_t/0.01)/10)
-        power_linear = power_linear.masked_fill(mask, torch.nan)
+        power_linear = power_linear.masked_fill(pad_mask, torch.nan)
         default_dopplers = torch.zeros_like(power_linear)
         array_response = compute_single_array_response_torch(params.bs_antenna,  az_t, el_t)
 
@@ -261,9 +282,9 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
 
         ###############
         delay_pred_secs = delay_pred/ 1e6
-        power_pred = power_pred.masked_fill(mask, 0)
+        power_pred = power_pred.masked_fill(pad_mask, 0)
         power_linear_pred = 10**( (power_pred/0.01)/10)
-        power_linear_pred = power_linear_pred.masked_fill(mask, torch.nan)
+        power_linear_pred = power_linear_pred.masked_fill(pad_mask, torch.nan)
         default_dopplers = torch.zeros_like(power_linear_pred)
        
         phase_pred = torch.rad2deg(phase_pred)
@@ -292,7 +313,7 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
         loss_az, loss_el, loss_path_length, loss_interaction, channel_loss)
 
 
-def compute_stop_metrics(path_count, targets, pad_value=0):
+def compute_stop_metrics(path_count, targets, pad_value=500):
     """
 
     Args:
@@ -747,85 +768,3 @@ def compute_beam_label_from_channel(H, S):
     best = torch.argmax(Prx, dim=1)
     return best, Prx
 ############Beam Prediction Things############
-
-
-## augmentation things
-def wrap_angles(t):
-    # wrap to [-pi, pi]
-    return torch.atan2(torch.sin(t), torch.cos(t))
-def add_noise_to_paths(
-    paths: torch.Tensor,
-    valid_mask,
-    p_noise: float = 0.1,
-    token_dropout: float = 0.0,
-    noise_params: dict = None,
-    device=None,
-):
-    """
-    Add noise to path tokens (in-place-safe: returns a new tensor).
-    paths: (B, T, F) with F = [delay, power, phase, aoa_az, aoa_el]
-    valid_mask: (B, T) True = valid position (not padding)
-    p_noise: probability a valid token's features get perturbed
-    noise_params: dict. Supports two styles:
-      (1) Per-parameter mean/std: "delay": {"mean": 0, "std": 0.1}, "power": {"mean": 0, "std": 0.01}, ...
-      (2) Legacy: "delay_frac", "power_db_std", "phase_deg_std", "aoa_az_std", "aoa_deg_std"
-    """
-    if device is None:
-        device = paths.device
-
-    if noise_params is None:
-        noise_params = {}
-
-    B, T, F = paths.shape
-    out = paths.clone().to(device)
-
-    coin = torch.rand((B, T), device=device)
-    perturb_mask = (coin < p_noise) & valid_mask
-    replace_mask = perturb_mask
-
-    def _get_delay_noise():
-        if "delay" in noise_params:
-            m = noise_params["delay"].get("mean", 0.0)
-            s = noise_params["delay"].get("std", 0.0)
-            return m + torch.randn((B, T), device=device) * s
-        valid_delays = out[:, :, 0][valid_mask]
-        std_delay = 1.0
-        if valid_delays.numel() > 0:
-            std_delay = valid_delays.std(unbiased=False).item() or 1.0
-        frac = noise_params.get("delay_frac", 0.5)
-        return torch.randn((B, T), device=device) * (std_delay * frac)
-
-    def _get_power_noise():
-        if "power" in noise_params:
-            m = noise_params["power"].get("mean", 0.0)
-            s = noise_params["power"].get("std", 0.0)
-            return m + torch.randn((B, T), device=device) * s
-        std_db = noise_params.get("power_db_std", 1.0)
-        return torch.randn((B, T), device=device) * (0.01 * std_db)
-
-    def _get_phase_noise():
-        if "phase" in noise_params:
-            m_rad = noise_params["phase"].get("mean", 0.0)
-            s_rad = noise_params["phase"].get("std", 0.0)
-            return m_rad + torch.randn((B, T), device=device) * s_rad
-        deg_std = noise_params.get("phase_deg_std", 8.0)
-        return torch.randn((B, T), device=device) * (np.deg2rad(deg_std))
-
-    def _get_aoa_noise(key, default_deg_std=5.0):
-        if key in noise_params:
-            m_rad = noise_params[key].get("mean", 0.0)
-            s_rad = noise_params[key].get("std", 0.0)
-            return m_rad + torch.randn((B, T), device=device) * s_rad
-        deg_std = noise_params.get("aoa_az_std" if key == "aoa_az" else "aoa_deg_std", default_deg_std)
-        return torch.randn((B, T), device=device) * (np.deg2rad(deg_std))
-
-    out[:, :, 0] = torch.where(replace_mask, out[:, :, 0] + _get_delay_noise(), out[:, :, 0])
-    out[:, :, 1] = torch.where(replace_mask, out[:, :, 1] + _get_power_noise(), out[:, :, 1])
-    phase_noise_rad = _get_phase_noise()
-    out[:, :, 2] = torch.where(replace_mask, wrap_angles(out[:, :, 2] + phase_noise_rad), out[:, :, 2])
-    aoa_az_rad = _get_aoa_noise("aoa_az", 5.0)
-    out[:, :, 3] = torch.where(replace_mask, wrap_angles(out[:, :, 3] + aoa_az_rad), out[:, :, 3])
-    aoa_el_rad = _get_aoa_noise("aoa_el", 2.0)
-    out[:, :, 4] = torch.where(replace_mask, wrap_angles(out[:, :, 4] + aoa_el_rad), out[:, :, 4])
-
-    return out

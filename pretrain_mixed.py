@@ -43,10 +43,10 @@ import numpy as np
 import random
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from dataset.dataloaders import MySeqDataLoader, ScenarioDataset, create_mixed_dataloader
+from dataset.dataloaders_play import MySeqDataLoader, ScenarioDataset, create_mixed_dataloader
 import wandb
-from utils.utils import *
-from models import PathDecoder, GPTPathDecoder, GPTPathDecoderEnv, PathDecoderEnv
+from Pathformer.utils.utils import *
+from models_play import PathDecoder, GPTPathDecoder, GPTPathDecoderEnv, PathDecoderEnv
 # %%
 all_scenarios = os.listdir('deepmimo_scenarios')
 
@@ -58,7 +58,7 @@ random.shuffle(all_scenarios)
 
 config = {
     "BATCH_SIZE":128,
-    "PAD_VALUE": 500,
+    "PAD_VALUE": 0,
     "USE_WANDB": True,
     "LR":2e-5,
     "epochs" : 200,
@@ -73,9 +73,10 @@ config = {
     "hidden_dim": 512,
     "n_layers": 8,
     "n_heads": 8,
-    "pre_train": True
-
- 
+    "pre_train": True,
+    # Target noise for generalization: probability and per-parameter (mean, std)
+    "TARGET_NOISE_PROB": 0.2,
+    "TARGET_NOISE_PARAMS": None,  # None = use add_noise_to_paths defaults; or e.g. {"delay": {"mean": 0, "std": 0.05}, "power": {"mean": 0, "std": 0.002}, "phase": {"mean": 0, "std": 0.1}, "aoa_az": {"mean": 0, "std": 0.08}, "aoa_el": {"mean": 0, "std": 0.04}}}
 }
 
 
@@ -144,12 +145,13 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
     with torch.no_grad():
         outer_bar = tqdm(val_loader, desc="Evaluating (batches)", leave=True)
 
-        for prompts, paths, path_lengths,interactions, env, env_prop  in outer_bar:
+        for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in outer_bar:
             prompts = prompts.cuda()
             paths = paths.cuda()
             path_lengths = path_lengths.cuda()
             env = env.cuda()
             env_prop = env_prop.cuda()
+            path_padding_mask = path_padding_mask.cuda()
 
             # Inner tqdm to show per-sample progress
             inner_bar = tqdm(range(prompts.size(0)),
@@ -160,11 +162,9 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
                 generated, path_lengths_pred, inter_str_pred = generate_paths(model, prompts[b], max_steps=max_generate)
 
                 generated = generated.cuda()
-                gt = paths[b][1:, :3]  # only (delay, power, phase)
-
-                # Mask padded values
-                valid_mask = (gt[:,0] != config["PAD_VALUE"])
-                gt = gt[valid_mask]
+                # Use path length to get valid positions (mask-based; pad value is 0)
+                n_valid = int(round(path_lengths[b].item() * 25))
+                gt = paths[b][1:1 + n_valid, :3]  # only (delay, power, phase)
 
                 T = min(len(gt), len(generated))
                 pred = generated[:T]
@@ -368,15 +368,21 @@ def train_with_interactions(model, config, task = None):
         model.train()
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False)
-        for prompts, paths, path_lengths, interactions, env, env_prop in pbar:  # NEW: added interactions
+        for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:  # NEW: added interactions
             prompts = prompts.cuda()
             paths = paths.cuda()
             path_lengths = path_lengths.cuda()
             interactions = interactions.cuda()  # NEW
             env = env.cuda()
             env_prop = env_prop.cuda()
+            path_padding_mask = path_padding_mask.cuda()
 
             paths_in = paths[:, :-1, :]
+            # Optional target noise (use mask to perturb only valid positions)
+            p_noise = config.get("TARGET_NOISE_PROB", 0.0)
+            if p_noise > 0:
+                noise_params = config.get("TARGET_NOISE_PARAMS")
+                paths_in = add_noise_to_paths(paths_in, path_padding_mask[:, :-1], p_noise=p_noise, noise_params=noise_params)
             interactions_in = interactions[:, :-1, :]
 
             paths_out = paths[:, 1:, :]
@@ -393,7 +399,8 @@ def train_with_interactions(model, config, task = None):
                 az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred,el_pred,
                 path_length_pred, interaction_logits, paths_out, path_lengths,
                 interactions_out, finetune=task, pad_value=config["PAD_VALUE"],
-                interaction_weight=config.get("interaction_weight", 0.1)
+                interaction_weight=config.get("interaction_weight", 0.1),
+                path_padding_mask=path_padding_mask
             )
             
             optimizer.zero_grad()
@@ -449,14 +456,14 @@ def train_with_interactions(model, config, task = None):
 
         with torch.no_grad():
             pbar = tqdm(val_loader, desc=f"Epoch {epoch} [Val]", leave=False)
-            for prompts, paths, path_lengths, interactions, env, env_prop in pbar:  # NEW
+            for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:  # NEW
                 prompts = prompts.cuda()
                 paths = paths.cuda()
                 path_lengths = path_lengths.cuda()
                 interactions = interactions.cuda()  # NEW
                 env = env.cuda()
                 env_prop = env_prop.cuda()
-
+                path_padding_mask = path_padding_mask.cuda()
 
                 paths_in = paths[:, :-1, :]
                 interactions_in = interactions[:, :-1, :]
@@ -474,7 +481,8 @@ def train_with_interactions(model, config, task = None):
                     az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred,el_pred,
                     path_length_pred, interaction_logits, paths_out, path_lengths,
                     interactions_out, finetune=task, pad_value=config["PAD_VALUE"],
-                    interaction_weight=config.get("interaction_weight", 0.1)
+                    interaction_weight=config.get("interaction_weight", 0.1),
+                    path_padding_mask=path_padding_mask
                 )
 
                 path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1),

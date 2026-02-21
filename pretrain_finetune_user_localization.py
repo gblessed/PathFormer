@@ -33,9 +33,9 @@ from sklearn.metrics import mean_squared_error
 import numpy as np
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from models import PathDecoder, GPTPathDecoder, PathDecoderEnv, PathFormerLocalizer
-from dataset.dataloaders import PreTrainMySeqDataLoader
-from utils.utils import *
+from models_play import PathDecoder, GPTPathDecoder, PathDecoderEnv, PathFormerLocalizer
+from dataset.dataloaders_play import PreTrainMySeqDataLoader
+from Pathformer.utils.utils import *
 
 from tqdm import tqdm
 import torch
@@ -553,7 +553,29 @@ for scenario in all_scenarios:
         "pre_train":False
     }
 
+    dataset = dm.load(scenario, )
+    train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power", normalizers=None)
+    
+    train_loader = torch.utils.data.DataLoader(
+        dataset     = train_data,
+        batch_size  = config['BATCH_SIZE'],
+        shuffle     = True,
+        collate_fn= train_data.collate_fn
+        )
 
+
+    # --- Execution ---
+    # Assuming you have initialized: train_data = PreTrainMySeqDataLoader(...)
+
+    val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power", normalizers=None)
+
+            
+    val_loader = torch.utils.data.DataLoader(
+        dataset     = val_data,
+        batch_size  = config['BATCH_SIZE'],
+        shuffle     = False,
+        collate_fn= val_data.collate_fn
+        )
     # Initialize best checkpoint tracking (based on path_length loss)
 
     # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=2, mode="min")

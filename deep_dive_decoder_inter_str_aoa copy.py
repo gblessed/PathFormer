@@ -33,8 +33,8 @@ from sklearn.metrics import mean_squared_error
 import numpy as np
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from utils.utils import *
-from models import GPTPathDecoder, 
+from Pathformer.utils.utils import *
+from models_play import GPTPathDecoder, 
 # %%
 # scenario = 'city_89_nairobi_3p5'
 scenario = 'city_0_newyork_3p5'

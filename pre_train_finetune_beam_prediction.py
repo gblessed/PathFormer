@@ -34,8 +34,8 @@ from sklearn.metrics import mean_squared_error
 import numpy as np
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from models import GPTPathDecoder, PathDecoderEnv, PathFormerBeamPredictor
-from dataset.dataloaders import MySeqDataLoader,PreTrainMySeqDataLoader
+from models_play import GPTPathDecoder, PathDecoderEnv, PathFormerBeamPredictor
+from dataset.dataloaders_play import MySeqDataLoader,PreTrainMySeqDataLoader
 from utils.utils import *
 import pandas as pd
 # %%
@@ -133,8 +133,8 @@ def train_beam_predictor(model, train_loader, val_loader, config):
             labels = beam_label.to(device).long()
             logits = model(paths, interactions, env_prop, env)
             loss = criterion(logits, labels)
-            optimizer.zero_grad(); los
-            s.backward(); optimizer.step()
+            optimizer.zero_grad(); 
+            loss.backward(); optimizer.step()
             totals.append(loss.item())
         sched.step()
         # Validation
@@ -164,14 +164,15 @@ def task_finetune(model, train_loader, val_loader, config, train_data,):
         total = 0
         val_total =0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False)
-        for prompts, paths, path_lengths, interactions, env, env_prop in pbar:  # NEW: added interactions
+        for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:  # NEW: added interactions
             prompts = prompts.cuda()
             paths = paths.cuda()
             path_lengths = path_lengths.cuda()
             interactions = interactions.cuda()  # NEW
             env_prop = env_prop.cuda()
             env = env.cuda()
-            
+            # path_padding_mask = path_padding_mask.cuda()
+
             paths_in = paths[:, :-1, :]
             interactions_in = interactions[:, :-1, :]
 
@@ -202,6 +203,7 @@ def task_finetune(model, train_loader, val_loader, config, train_data,):
 
 
             delay_secs = delay_t/ 1e6
+            # mask = path_padding_mask[:, 1:]
             mask= delay_secs == config["PAD_VALUE"]/ 1e6
             delay_secs = np.where(mask, np.nan, delay_secs)
             phase = np.where(mask, np.nan, phase)
@@ -254,13 +256,14 @@ def task_finetune(model, train_loader, val_loader, config, train_data,):
             # prepare val aoa loss lists
             val_loss_az = []
             val_loss_el = []
-            for prompts, paths, path_lengths, interactions, env, env_prop in pbar:  # NEW: added interactions
+            for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:  # NEW: added interactions
                 prompts = prompts.cuda()
                 paths = paths.cuda()
                 path_lengths = path_lengths.cuda()
                 interactions = interactions.cuda()  # NEW
                 env_prop = env_prop.cuda()
                 env = env.cuda()
+                # path_padding_mask = path_padding_mask.cuda()
                 
                 paths_in = paths[:, :-1, :]
                 interactions_in = interactions[:, :-1, :]
@@ -283,7 +286,8 @@ def task_finetune(model, train_loader, val_loader, config, train_data,):
 
 
                 delay_secs = delay_t/ 1e6
-                mask= delay_secs == config["PAD_VALUE"]/ 1e6
+                mask = delay_secs == config["PAD_VALUE"]/ 1e6
+                # mask = path_padding_mask[:, 1:]
                 delay_secs = np.where(mask, np.nan, delay_secs)
                 phase = np.where(mask, np.nan, phase)
 
@@ -316,7 +320,7 @@ def task_finetune(model, train_loader, val_loader, config, train_data,):
 
         avg_val_loss = np.mean(val_losses)
 
-        # scheduler.step(avg_val_loss)
+        scheduler.step(avg_val_loss)
         current_lr = optimizer.param_groups[0]["lr"]
 
         # -------------------- CHECKPOINT SAVING --------------------
@@ -349,8 +353,8 @@ def task_finetune(model, train_loader, val_loader, config, train_data,):
 
 
         print(f"  LR: {current_lr:.3e}")
-        scheduler.step()
-ß
+        # scheduler.step()
+
     return best_val_acc
 
 # best_epoch, best_loss = load_best_checkpoint(model, checkpoint_path=checkpoint_path)
@@ -380,12 +384,13 @@ all_scenarios = ['city_47_chicago_3p5','city_10_florida_villa_7gp_1758095156175'
 
 
 for scenario in all_scenarios:
+    print(f"Beam prediction for {scenario}")
     config = {
         "BATCH_SIZE":128,
         "PAD_VALUE": 500,
         "USE_WANDB": False,
-        "LR":2e-5,
-        "epochs" : 50,
+        "LR":2e-3,
+        "epochs" : 100,
         "interaction_weight": 0.01,  # Weight for interaction loss
         "experiment": f"true_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
         "base_experiment": f"true_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
@@ -395,6 +400,32 @@ for scenario in all_scenarios:
         "pre_train":False,
         "task":"beam_prediction"
     }
+    
+    dataset = dm.load(scenario, )
+    train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power", normalizers=None)
+    
+    train_loader = torch.utils.data.DataLoader(
+        dataset     = train_data,
+        batch_size  = config['BATCH_SIZE'],
+        shuffle     = True,
+        collate_fn= train_data.collate_fn
+        )
+
+
+    # --- Execution ---
+    # Assuming you have initialized: train_data = PreTrainMySeqDataLoader(...)
+
+    val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power", normalizers=None)
+
+            
+    val_loader = torch.utils.data.DataLoader(
+        dataset     = val_data,
+        batch_size  = config['BATCH_SIZE'],
+        shuffle     = False,
+        collate_fn= val_data.collate_fn
+        )
+
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint_path = f"{config['experiment']}_best_model_checkpoint.pth"
     os.makedirs("checkpoints2", exist_ok=True)
@@ -437,13 +468,13 @@ for scenario in all_scenarios:
 
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["LR"])
-    # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=2, mode="min")
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, 
-        T_0=25,      # Restart every 10 epochs
-        T_mult=1,    # Double the period after each restart
-        eta_min=1e-8 # Minimum LR
-    )
+    scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=3, mode="min")
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+    #     optimizer, 
+    #     T_0=25,      # Restart every 10 epochs
+    #     T_mult=1,    # Double the period after each restart
+    #     eta_min=1e-8 # Minimum LR
+    # )
 
     # Initialize best checkpoint tracking (based on path_length loss)
 

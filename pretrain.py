@@ -43,10 +43,10 @@ import numpy as np
 import random
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from dataset.dataloaders import MySeqDataLoader
+from dataset.dataloaders_play import MySeqDataLoader
 import wandb
-from utils.utils import *
-from models import PathDecoder, GPTPathDecoder, GPTPathDecoderEnv
+from Pathformer.utils.utils import *
+from models_play import PathDecoder, GPTPathDecoder, GPTPathDecoderEnv
 # %%
 all_scenarios = os.listdir('deepmimo_scenarios')
 

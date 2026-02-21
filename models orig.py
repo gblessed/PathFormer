@@ -3,6 +3,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+
+class BetaRegressor(nn.Module):
+    def __init__(self, input_dim, hidden_dim=32):
+        super().__init__()
+        self.fc = nn.Linear(input_dim, hidden_dim)
+        self.mu_head = nn.Linear(hidden_dim, 1)
+        self.phi_head = nn.Linear(hidden_dim, 1)
+
+    def forward(self, x):
+        h = F.relu(self.fc(x))
+        mu = torch.sigmoid(self.mu_head(h))        # ensures (0,1)
+        phi = torch.exp(self.phi_head(h)) + 1e-6  # ensures > 0
+        return mu, phi
+
+
 class GPTBlock(nn.Module):
     def __init__(self, dim, n_heads, ff_dim):
         super().__init__()
@@ -368,7 +384,7 @@ class PathDecoderEnv(nn.Module):
             delay_pred, power_pred, phase_sin_pred, phase_cos_pred,
             phase_pred, pathcounts, interaction_logits
         """
-       
+
         B, T2, _ = environment_properties.shape
         env_embedding = self.environment_embed(environment).unsqueeze(1)  # (B, 1, hidden_dim)
         env_prop_embedding = self.environment_prop_embed(environment_properties)  # (B, T2, hidden_dim)
@@ -489,20 +505,29 @@ class PathDecoder(nn.Module):
 
         # Output head: predict next (delay, power, phase_sin, phase_cos, is_stop)
         self.out_delay = nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.GELU()
                     nn.Linear(hidden_dim, 1),
+                    nn.ReLU()
                     # nn.Sigmoid(),
                 )
         
         self.out_power = nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.GELU()
                     nn.Linear(hidden_dim, 1),
+                  
                 )
+        # self.out_delay = BetaRegressor(hidden_dim, hidden_dim)
+        # self.out_power = BetaRegressor(hidden_dim, hidden_dim)
+
         self.out = nn.Sequential(
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.GELU(),
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.GELU(),
                     nn.Linear(hidden_dim, 6),
-                    # nn.Tanh(),
+                    nn.Tanh()
                 )
         self.pathcount_head = nn.Sequential(
             nn.Linear(prefix_len * hidden_dim, hidden_dim),
@@ -615,8 +640,12 @@ class PathFormerBeamPredictor(nn.Module):
         super().__init__()
         self.backbone = pretrained_backbone
         self.beam_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+
+            nn.GELU(),
             nn.Linear(hidden_dim, hidden_dim//2),
             nn.GELU(),
+
             # nn.Dropout(0.1),
             nn.Linear(hidden_dim//2, n_beams)
         )

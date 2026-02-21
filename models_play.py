@@ -3,6 +3,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+
+class BetaRegressor(nn.Module):
+    def __init__(self, input_dim, hidden_dim=32):
+        super().__init__()
+        self.fc = nn.Linear(input_dim, hidden_dim)
+        self.mu_head = nn.Linear(hidden_dim, 1)
+        self.phi_head = nn.Linear(hidden_dim, 1)
+
+    def forward(self, x):
+        h = F.relu(self.fc(x))
+        mu = torch.sigmoid(self.mu_head(h))        # ensures (0,1)
+        phi = torch.exp(self.phi_head(h)) + 1e-6  # ensures > 0
+        return mu, phi
+
+
 class GPTBlock(nn.Module):
     def __init__(self, dim, n_heads, ff_dim):
         super().__init__()
@@ -368,7 +384,7 @@ class PathDecoderEnv(nn.Module):
             delay_pred, power_pred, phase_sin_pred, phase_cos_pred,
             phase_pred, pathcounts, interaction_logits
         """
-       
+
         B, T2, _ = environment_properties.shape
         env_embedding = self.environment_embed(environment).unsqueeze(1)  # (B, 1, hidden_dim)
         env_prop_embedding = self.environment_prop_embed(environment_properties)  # (B, T2, hidden_dim)
@@ -458,6 +474,266 @@ class PathDecoderEnv(nn.Module):
             pathcounts, interaction_logits)
 
 
+class PathDecoderDelta(nn.Module):
+    def __init__(self, prompt_dim=6, hidden_dim=512, n_layers=6, n_heads=4,  max_T = 35, prefix_len=4, pad_value=500):
+        super().__init__()
+        self.pad_value = pad_value
+        self.hidden_dim = hidden_dim
+        self.prefix_len = prefix_len
+        self.max_T = max_T
+        # Project prompt → conditioning token
+        # self.prompt_proj = nn.Linear(prompt_dim, hidden_dim)
+        self.prompt_to_prefix = nn.Linear(prompt_dim, prefix_len * hidden_dim)
+        # Path token embedding: delay, power, sin(phase), cos(phase), is_last
+        self.path_in = nn.Linear(12, hidden_dim)
+
+        # Positional embedding for sequence steps
+        self.pos_emb = nn.Embedding(max_T, hidden_dim)  # supports up to 25 paths
+
+        # self.environment_embed = nn.Linear(4, hidden_dim)  # Example input size
+        # self.environment_prop_embed = nn.Linear(6, hidden_dim)
+        
+        self.interaction_head = nn.Linear(hidden_dim, 4)
+
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=hidden_dim,
+            nhead=n_heads,
+            dim_feedforward=4*hidden_dim,
+            batch_first=True
+        )
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=n_layers)
+
+        # Output head: predict next (delay, power, phase_sin, phase_cos, is_stop)
+        self.out_delay = nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.GELU(),
+                    nn.Linear(hidden_dim, 1),
+                    nn.ReLU()
+                    # nn.Sigmoid(),
+                )
+        
+        self.out_power = nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.GELU(),
+                    nn.Linear(hidden_dim, 1),
+                    nn.ReLU()
+                    
+                )
+        # self.out_delay = BetaRegressor(hidden_dim, hidden_dim)
+        # self.out_power = BetaRegressor(hidden_dim, hidden_dim)
+
+        self.out = nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.GELU(),
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.GELU(),
+                    nn.Linear(hidden_dim, 6),
+                    nn.Tanh()
+                )
+        self.pathcount_head = nn.Sequential(
+            nn.Linear(prefix_len * hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        # Encoder first-step head: predicts first path actuals from prefix only (no path tokens).
+        # Outputs 8 scalars: delay, power (ReLU); phase_sin, phase_cos, az_sin, az_cos, el_sin, el_cos (Tanh).
+        self.encoder_first_head = nn.Sequential(
+            nn.Linear(prefix_len * hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 8),
+        )
+
+    def forward(self, prompts, paths, interactions):
+        """
+        prompts: (B, prompt_dim)
+        paths: (B, T, 4)
+        interactions: (B,T,4)
+        environment: (B, 4)
+        environment_properties: (B, T2, 6)
+        Returns:
+            delay_pred, power_pred, phase_sin_pred, phase_cos_pred,
+            phase_pred, pathcounts, interaction_logits
+        Position 0 = encoder prediction (first path actuals). Positions 1+ = decoder prediction (deltas).
+        """
+
+        # B, T2, _ = environment_properties.shape
+        # env_embedding = self.environment_embed(environment).unsqueeze(1)  # (B, 1, hidden_dim)
+        # env_prop_embedding = self.environment_prop_embed(environment_properties)  # (B, T2, hidden_dim)
+        # self.env_len = 1 + T2
+
+        # Convert prompt → prefix tokens
+        # if pre_train:
+        #     prefix_raw = self.prompt_to_prefix(prompts * 0.0) # Zero out input
+        #     prefix = torch.zeros( (B, self.prefix_len, self.hidden_dim)).to("cuda")
+        # else:
+
+
+
+        B, T, _ = paths.shape
+        prefix_raw = self.prompt_to_prefix(prompts)
+        prefix = prefix_raw.view(B, self.prefix_len, self.hidden_dim)
+        prefix_flat = prefix.reshape(B, -1)
+
+        # Convert phase to sin/cos
+        phase = paths[:,:,2]
+        sinp = torch.sin(phase)
+        cosp = torch.cos(phase)
+
+        aoa_az = paths[:, :, 3]
+        sin_az = torch.sin(aoa_az)
+        cos_az = torch.cos(aoa_az)
+
+        aoa_el = paths[:, :, 4]
+        sin_el = torch.sin(aoa_el)
+        cos_el = torch.cos(aoa_el)
+
+        x = torch.stack([paths[:,:,0], paths[:,:,1], sinp, cosp, sin_az, cos_az, sin_el,cos_el ], dim=-1)
+
+
+        interactions_clean = interactions.clone()
+        interactions_clean[interactions_clean == -1] = 0
+
+        x = torch.cat([x, interactions_clean], dim=-1)
+        # Embed tokens
+        x = self.path_in(x)   # (B, T, hidden)
+         ## Append SOS embedding
+        # x = torch.cat([env_embedding, env_prop_embedding, x], dim=1)
+
+        total_len =   T
+        pos = self.pos_emb(torch.arange(total_len, device=x.device))  # (T, hidden)
+
+        x = x + pos
+        # Conditioning prompt token
+
+        
+
+        # Construct causal mask
+        causal_mask = torch.triu(torch.ones(total_len, total_len, device=x.device), diagonal=1).bool()
+
+        # Decode
+        h = self.decoder(
+            tgt=x,
+            memory=prefix,
+            tgt_mask=causal_mask
+        )
+
+        h_paths = h[:, :, :]
+
+        # Decoder: predicts next-step parameters (at t>=1 these are trained as deltas)
+        out = self.out(h_paths)  # (B, T, 6)
+
+        delay_dec = self.out_delay(h_paths).squeeze(-1)   # (B, T)
+        power_dec = self.out_power(h_paths).squeeze(-1)   # (B, T)
+        phase_sin_dec = out[:, :, 0]
+        phase_cos_dec = out[:, :, 1]
+        az_sin_dec = out[:, :, 2]
+        az_cos_dec = out[:, :, 3]
+        el_sin_dec = out[:, :, 4]
+        el_cos_dec = out[:, :, 5]
+
+        # Encoder first-step: actuals from prefix only (position 0)
+        enc_raw = self.encoder_first_head(prefix_flat)   # (B, 8)
+        enc_delay = F.relu(enc_raw[:, 0:1]).squeeze(-1)   # (B,)
+        enc_power = (enc_raw[:, 1:2]).squeeze(-1)   # (B,)
+        enc_phase_sin = torch.tanh(enc_raw[:, 2])
+        enc_phase_cos = torch.tanh(enc_raw[:, 3])
+        enc_az_sin = torch.tanh(enc_raw[:, 4])
+        enc_az_cos = torch.tanh(enc_raw[:, 5])
+        enc_el_sin = torch.tanh(enc_raw[:, 6])
+        enc_el_cos = torch.tanh(enc_raw[:, 7])
+
+        # Position 0 = encoder (actuals); positions 1+ = decoder (deltas)
+        delay_pred = delay_dec.clone()
+        delay_pred[:, 0] = enc_delay
+        power_pred = power_dec.clone()
+        power_pred[:, 0] = enc_power
+        phase_sin_pred = phase_sin_dec.clone()
+        phase_sin_pred[:, 0] = enc_phase_sin
+        phase_cos_pred = phase_cos_dec.clone()
+        phase_cos_pred[:, 0] = enc_phase_cos
+        az_sin_pred = az_sin_dec.clone()
+        az_sin_pred[:, 0] = enc_az_sin
+        az_cos_pred = az_cos_dec.clone()
+        az_cos_pred[:, 0] = enc_az_cos
+        el_sin_pred = el_sin_dec.clone()
+        el_sin_pred[:, 0] = enc_el_sin
+        el_cos_pred = el_cos_dec.clone()
+        el_cos_pred[:, 0] = enc_el_cos
+
+        phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)
+        az_pred = torch.atan2(az_sin_pred, az_cos_pred)
+        el_pred = torch.atan2(el_sin_pred, el_cos_pred)
+        interaction_logits = self.interaction_head(h_paths)
+        pathcounts = self.pathcount_head(prefix_flat)
+
+        return (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+            az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+            pathcounts, interaction_logits)
+
+class PathFormerBeamPredictor(nn.Module):
+    def __init__(self, pretrained_backbone, hidden_dim=512, n_beams=64):
+        super().__init__()
+        self.backbone = pretrained_backbone
+        self.beam_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim//2),
+            nn.GELU(),
+
+            # nn.Dropout(0.1),
+            nn.Linear(hidden_dim//2, n_beams)
+        )
+    def forward(self, prompts, paths, interactions, env_prop, env):
+        # Reuse extract_backbone_features from PathFormerLocalizer if available
+        B = paths.size(0)
+        h = self.backbone.decoder  # we will call extractor similar to your localizer
+        # Use same extract logic as PathFormerLocalizer to obtain h
+        h_full = self.backbone_forward_to_hidden(prompts, paths, interactions, env_prop, env)
+        env_len = 1 + env_prop.size(1)
+        path_tokens = h_full[:, env_len:, :]
+        # summary = torch.mean(path_tokens, dim=1)  # (B, hidden_dim)
+        summary = path_tokens[:, 0, :]
+        logits = self.beam_head(summary)          # (B, n_beams)
+        return logits
+
+    def backbone_forward_to_hidden(self, prompts, paths, interactions, env_prop, env):
+        # copy your localizer's extract_backbone_features body (or call it if available)
+        return self.extract_backbone_features(prompts, paths, interactions, env_prop, env)
+    def extract_backbone_features(self, prompts, paths, interactions, env_prop, env):
+        # This mirrors the internal logic of your PathDecoderEnv.forward
+        B, T2, _ = env_prop.shape
+        env_emb = self.backbone.environment_embed(env).unsqueeze(1)
+        prop_emb = self.backbone.environment_prop_embed(env_prop)
+        
+        # Masked prefix logic
+        prefix_raw = self.backbone.prompt_to_prefix(prompts)
+        prefix = prefix_raw.view(B, self.backbone.prefix_len, self.backbone.hidden_dim)
+
+        # Path Embedding (matching your 12-dim input logic)
+        phase = paths[:,:,2]
+        x_path = torch.stack([
+            paths[:,:,0], paths[:,:,1], torch.sin(phase), torch.cos(phase),
+            torch.sin(paths[:,:,3]), torch.cos(paths[:,:,3]), 
+            torch.sin(paths[:,:,4]), torch.cos(paths[:,:,4])
+        ], dim=-1)
+        
+        inter_clean = interactions.clone()
+        inter_clean[inter_clean == -1] = 0
+        x = torch.cat([x_path, inter_clean], dim=-1)
+        x = self.backbone.path_in(x)
+        
+        # Combine and Add Positional Embeddings
+        x = torch.cat([env_emb, prop_emb, x], dim=1)
+        pos = self.backbone.pos_emb(torch.arange(x.size(1), device=x.device))
+        x = x + pos
+        
+        # Transformer pass
+        causal_mask = torch.triu(torch.ones(x.size(1), x.size(1), device=x.device), diagonal=1).bool()
+        return self.backbone.decoder(tgt=x, memory=prefix, tgt_mask=causal_mask)
+    # You can implement backbone_extract_features by calling the same logic as PathFormerLocalizer.extract_backbone_features
+
+
 class PathDecoder(nn.Module):
     def __init__(self, prompt_dim=6, hidden_dim=512, n_layers=6, n_heads=4,  max_T = 35, prefix_len=4, pad_value=500):
         super().__init__()
@@ -489,20 +765,29 @@ class PathDecoder(nn.Module):
 
         # Output head: predict next (delay, power, phase_sin, phase_cos, is_stop)
         self.out_delay = nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.GELU(),
                     nn.Linear(hidden_dim, 1),
+                    nn.ReLU()
                     # nn.Sigmoid(),
                 )
         
         self.out_power = nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.GELU(),
                     nn.Linear(hidden_dim, 1),
+                  
                 )
+        # self.out_delay = BetaRegressor(hidden_dim, hidden_dim)
+        # self.out_power = BetaRegressor(hidden_dim, hidden_dim)
+
         self.out = nn.Sequential(
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.GELU(),
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.GELU(),
                     nn.Linear(hidden_dim, 6),
-                    # nn.Tanh(),
+                    nn.Tanh()
                 )
         self.pathcount_head = nn.Sequential(
             nn.Linear(prefix_len * hidden_dim, hidden_dim),
@@ -609,65 +894,6 @@ class PathDecoder(nn.Module):
         return (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
             az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
             pathcounts, interaction_logits)
-
-class PathFormerBeamPredictor(nn.Module):
-    def __init__(self, pretrained_backbone, hidden_dim=512, n_beams=64):
-        super().__init__()
-        self.backbone = pretrained_backbone
-        self.beam_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim//2),
-            nn.GELU(),
-            # nn.Dropout(0.1),
-            nn.Linear(hidden_dim//2, n_beams)
-        )
-    def forward(self, prompts, paths, interactions, env_prop, env):
-        # Reuse extract_backbone_features from PathFormerLocalizer if available
-        B = paths.size(0)
-        h = self.backbone.decoder  # we will call extractor similar to your localizer
-        # Use same extract logic as PathFormerLocalizer to obtain h
-        h_full = self.backbone_forward_to_hidden(prompts, paths, interactions, env_prop, env)
-        env_len = 1 + env_prop.size(1)
-        path_tokens = h_full[:, env_len:, :]
-        summary = torch.mean(path_tokens, dim=1)  # (B, hidden_dim)
-        logits = self.beam_head(summary)          # (B, n_beams)
-        return logits
-
-    def backbone_forward_to_hidden(self, prompts, paths, interactions, env_prop, env):
-        # copy your localizer's extract_backbone_features body (or call it if available)
-        return self.extract_backbone_features(prompts, paths, interactions, env_prop, env)
-    def extract_backbone_features(self, prompts, paths, interactions, env_prop, env):
-        # This mirrors the internal logic of your PathDecoderEnv.forward
-        B, T2, _ = env_prop.shape
-        env_emb = self.backbone.environment_embed(env).unsqueeze(1)
-        prop_emb = self.backbone.environment_prop_embed(env_prop)
-        
-        # Masked prefix logic
-        prefix_raw = self.backbone.prompt_to_prefix(prompts)
-        prefix = prefix_raw.view(B, self.backbone.prefix_len, self.backbone.hidden_dim)
-
-        # Path Embedding (matching your 12-dim input logic)
-        phase = paths[:,:,2]
-        x_path = torch.stack([
-            paths[:,:,0], paths[:,:,1], torch.sin(phase), torch.cos(phase),
-            torch.sin(paths[:,:,3]), torch.cos(paths[:,:,3]), 
-            torch.sin(paths[:,:,4]), torch.cos(paths[:,:,4])
-        ], dim=-1)
-        
-        inter_clean = interactions.clone()
-        inter_clean[inter_clean == -1] = 0
-        x = torch.cat([x_path, inter_clean], dim=-1)
-        x = self.backbone.path_in(x)
-        
-        # Combine and Add Positional Embeddings
-        x = torch.cat([env_emb, prop_emb, x], dim=1)
-        pos = self.backbone.pos_emb(torch.arange(x.size(1), device=x.device))
-        x = x + pos
-        
-        # Transformer pass
-        causal_mask = torch.triu(torch.ones(x.size(1), x.size(1), device=x.device), diagonal=1).bool()
-        return self.backbone.decoder(tgt=x, memory=prefix, tgt_mask=causal_mask)
-    # You can implement backbone_extract_features by calling the same logic as PathFormerLocalizer.extract_backbone_features
-
 
 class PathFormerLocalizer(nn.Module):
     def __init__(self, pretrained_backbone, hidden_dim=512):
