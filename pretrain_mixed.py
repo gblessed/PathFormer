@@ -61,7 +61,7 @@ config = {
     "PAD_VALUE": 0,
     "USE_WANDB": True,
     "LR":2e-5,
-    "epochs" : 200,
+    "epochs" : 75,
     "interaction_weight": 0.01,  # Weight for interaction loss
     # "experiment": "interacaction_power_only_dec_only",
 

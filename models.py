@@ -510,11 +510,12 @@ class PathDecoder(nn.Module):
             nn.Linear(hidden_dim, 1)
         )
 
-    def forward(self, prompts, paths, interactions):
+    def forward(self, prompts, paths, interactions, **kwargs):
         """
         prompts: (B, prompt_dim)
         paths: (B, T, 4)
         interactions: (B,T,4)
+        **kwargs: ignored (e.g. cluster_emb, cluster_pad_mask for compatibility with playground)
         environment: (B, 4)
         environment_properties: (B, T2, 6)
         Returns:
@@ -609,6 +610,37 @@ class PathDecoder(nn.Module):
         return (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
             az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
             pathcounts, interaction_logits)
+
+    def forward_hidden(self, prompts, paths, interactions):
+        """
+        Same as forward but returns (h_paths, prefix_flat) before output heads.
+        Used by wrappers that need hidden state (e.g. cluster MLP head).
+        """
+        B, T, _ = paths.shape
+        prefix_raw = self.prompt_to_prefix(prompts)
+        prefix = prefix_raw.view(B, self.prefix_len, self.hidden_dim)
+        phase = paths[:, :, 2]
+        sinp = torch.sin(phase)
+        cosp = torch.cos(phase)
+        aoa_az = paths[:, :, 3]
+        sin_az = torch.sin(aoa_az)
+        cos_az = torch.cos(aoa_az)
+        aoa_el = paths[:, :, 4]
+        sin_el = torch.sin(aoa_el)
+        cos_el = torch.cos(aoa_el)
+        x = torch.stack([paths[:, :, 0], paths[:, :, 1], sinp, cosp, sin_az, cos_az, sin_el, cos_el], dim=-1)
+        interactions_clean = interactions.clone()
+        interactions_clean[interactions_clean == -1] = 0
+        x = torch.cat([x, interactions_clean], dim=-1)
+        x = self.path_in(x)
+        total_len = T
+        pos = self.pos_emb(torch.arange(total_len, device=x.device))
+        x = x + pos
+        causal_mask = torch.triu(torch.ones(total_len, total_len, device=x.device), diagonal=1).bool()
+        h = self.decoder(tgt=x, memory=prefix, tgt_mask=causal_mask)
+        h_paths = h[:, :, :]
+        prefix_flat = prefix.reshape(B, -1)
+        return h_paths, prefix_flat
 
 class PathFormerBeamPredictor(nn.Module):
     def __init__(self, pretrained_backbone, hidden_dim=512, n_beams=64):
