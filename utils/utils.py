@@ -105,6 +105,48 @@ def generate_paths_no_env(model, prompt, max_steps=25, stop_threshold=0.5):
     return (torch.stack(outputs, dim=1).squeeze(0).detach().cpu(),  # (T, 5)
             pathcounts, 
             torch.stack(outputs_inter_str, dim=1).squeeze(0).detach().cpu())  # (T, 4)
+
+
+def generate_paths_no_env_batch(model, prompts, max_steps=25, stop_threshold=0.5):
+    """
+    Generate paths autoregressively for a batch of prompts.
+    prompts: (B, prompt_dim)
+    Returns:
+        generated: (B, T, 5) on CPU
+        pathcounts: from model (last step)
+        inter_str_pred: (B, T, 4) on CPU
+    """
+    model.eval()
+    device = next(model.parameters()).device
+    B = prompts.size(0)
+    prompts = prompts.to(device)
+    cur = torch.zeros(B, 1, 5, device=device)
+    inter_str = -1 * torch.ones(B, 1, 4, device=device)
+    outputs = []
+    outputs_inter_str = []
+    for t in range(max_steps):
+        d, p, s, c, ph, az_s, az_c, az, el_s, el_c, el, pathcounts, inter_str_logits = model(
+            prompts, cur, inter_str
+        )
+        d_t = d[:, -1]
+        p_t = p[:, -1]
+        ph_t = ph[:, -1]
+        az_t = az[:, -1]
+        el_t = el[:, -1]
+        inter_logits_t = inter_str_logits[:, -1]
+        inter_pred_t = (torch.sigmoid(inter_logits_t) > 0.5).float()
+        outputs.append(torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1))
+        outputs_inter_str.append(inter_pred_t)
+        next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1).unsqueeze(1)
+        cur = torch.cat([cur, next_path], dim=1)
+        inter_str = torch.cat([inter_str, inter_pred_t.unsqueeze(1)], dim=1)
+    return (
+        torch.stack(outputs, dim=1).detach().cpu(),
+        pathcounts,
+        torch.stack(outputs_inter_str, dim=1).detach().cpu(),
+    )
+
+
 def masked_loss_pre_train(delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
                 path_length_predict, interaction_logits, targets, path_length_targets,
                 interaction_targets, pad_value=500, interaction_weight=0.1):
@@ -163,7 +205,8 @@ def masked_loss_pre_train(delay_pred, power_pred, sin_pred, cos_pred, phase_pred
 def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
                 az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred,el_pred,
                 path_length_predict, interaction_logits, targets, path_length_targets,
-                interaction_targets, finetune=None, pad_value=500, interaction_weight=0.1,path_padding_mask=None):
+                interaction_targets, finetune=None, pad_value=500, interaction_weight=0.1, path_padding_mask=None,
+                time_step_weighted=False):
     """
     Added interaction prediction loss as auxiliary task.
     
@@ -171,6 +214,7 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
         interaction_logits: (B, T, 4) - logits for [R, D, S, T]
         interaction_targets: (B, T, 4) - binary labels, -1 for invalid
         interaction_weight: weight for interaction loss
+        time_step_weighted: if True, weight per-step losses by (1/2)**n for time index n (earlier steps weighted more)
     """
     delay_t = targets[:, :, 0]
     power_t = targets[:, :, 1]
@@ -199,24 +243,45 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
     else:
         mask = (delay_t != pad_value)
 
+    # Optional: weight by (1/2)**n for time step n (earlier steps weighted more)
+    if time_step_weighted:
+        T = delay_pred.shape[1]
+        time_weights = (0.75 ** torch.arange(T, device=delay_pred.device, dtype=delay_pred.dtype)).unsqueeze(0)  # (1, T)
+        mask_float = mask.float()
+        denom = (time_weights * mask_float).sum().clamp(min=1e-8)
 
-    # Existing losses
+        def weighted_mean(sq_err):
+            return ((sq_err * time_weights * mask_float).sum() / denom)
 
+        loss_delay = weighted_mean((delay_pred - delay_t) ** 2)
+        loss_power = weighted_mean((power_pred - power_t) ** 2)
+        loss_sin = weighted_mean((phase_sin_pred - sinp) ** 2)
+        loss_cos = weighted_mean((phase_cos_pred - cosp) ** 2)
+        loss_phase = (loss_sin + loss_cos) / 2
 
-    loss_delay = ((delay_pred - delay_t)**2)[mask].mean()
-    loss_power = ((power_pred - power_t)**2)[mask].mean()
-    loss_sin = ((phase_sin_pred - sinp)**2)[mask].mean()
-    loss_cos = ((phase_cos_pred - cosp)**2)[mask].mean()
-    loss_phase = (loss_sin + loss_cos) / 2
+        loss_az_sin = weighted_mean((az_sin_pred - sin_az_t) ** 2)
+        loss_az_cos = weighted_mean((az_cos_pred - cos_az_t) ** 2)
+        loss_az = (loss_az_sin + loss_az_cos) / 2
 
-    # AoA losses
-    loss_az_sin = ((az_sin_pred - sin_az_t)**2)[mask].mean()
-    loss_az_cos = ((az_cos_pred - cos_az_t)**2)[mask].mean()
-    loss_az = (loss_az_sin + loss_az_cos) / 2
+        loss_el_sin = weighted_mean((el_sin_pred - sin_el_t) ** 2)
+        loss_el_cos = weighted_mean((el_cos_pred - cos_el_t) ** 2)
+        loss_el = (loss_el_sin + loss_el_cos) / 2
+    else:
+        # Existing losses (uniform over time)
+        loss_delay = ((delay_pred - delay_t)**2)[mask].mean()
+        loss_power = ((power_pred - power_t)**2)[mask].mean()
+        loss_sin = ((phase_sin_pred - sinp)**2)[mask].mean()
+        loss_cos = ((phase_cos_pred - cosp)**2)[mask].mean()
+        loss_phase = (loss_sin + loss_cos) / 2
 
-    loss_el_sin = ((el_sin_pred - sin_el_t)**2)[mask].mean()
-    loss_el_cos = ((el_cos_pred - cos_el_t)**2)[mask].mean()
-    loss_el = (loss_el_sin + loss_el_cos) / 2
+        # AoA losses
+        loss_az_sin = ((az_sin_pred - sin_az_t)**2)[mask].mean()
+        loss_az_cos = ((az_cos_pred - cos_az_t)**2)[mask].mean()
+        loss_az = (loss_az_sin + loss_az_cos) / 2
+
+        loss_el_sin = ((el_sin_pred - sin_el_t)**2)[mask].mean()
+        loss_el_cos = ((el_cos_pred - cos_el_t)**2)[mask].mean()
+        loss_el = (loss_el_sin + loss_el_cos) / 2
 
     loss_path_length = ((path_length_targets - path_length_predict)**2).mean() * 0.0
     
@@ -248,39 +313,51 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
         else:
             mask = delay_secs == (pad_value / 1e6)
         power_t = power_t.masked_fill(mask, 0)
-        phase_t = torch.rad2deg(phase_t)
+        phase_degs = torch.rad2deg(phase_t)
         power_linear = 10**( (power_t/0.01)/10)
         power_linear = power_linear.masked_fill(mask, torch.nan)
         default_dopplers = torch.zeros_like(power_linear)
         array_response = compute_single_array_response_torch(params.bs_antenna,  az_t, el_t)
 
        
-        gt_channel = generate_MIMO_channel_torch(array_response, power_linear, delay_secs, phase_t, default_dopplers, ofdm_params= params.ofdm, freq_domain=params.freq_domain )
+        gt_channel = generate_MIMO_channel_torch(array_response, power_linear, delay_secs, phase_degs, default_dopplers, ofdm_params= params.ofdm, freq_domain=params.freq_domain )
         # print("gt_channel", gt_channel[0])
-
+        ###############
+        # delay_pred = delay_t
+        # power_pred = power_t
+        # phase_pred = phase_t
+        # az_pred = az_t
+        # el_pred = el_t
 
         ###############
         delay_pred_secs = delay_pred/ 1e6
         power_pred = power_pred.masked_fill(mask, 0)
-        power_linear_pred = 10**( (power_pred/0.01)/10)
+        # Clamp power (in 0.01*dB) to prevent 10^(x) overflow: typical range ~[-120, 0] dB = [-12000, 0]
+        power_pred_clamped = power_pred.clamp(-15000.0, 500.0)
+        power_linear_pred = 10**( (power_pred_clamped/0.01)/10)
         power_linear_pred = power_linear_pred.masked_fill(mask, torch.nan)
         default_dopplers = torch.zeros_like(power_linear_pred)
-       
         phase_pred = torch.rad2deg(phase_pred)
+
         array_response_pred = compute_single_array_response_torch(params.bs_antenna,  az_pred, el_pred)
+
+
+
         pred_channel = generate_MIMO_channel_torch(array_response_pred, power_linear_pred, delay_pred_secs, phase_pred, default_dopplers, ofdm_params= params.ofdm, freq_domain=params.freq_domain )
-        
-        
-        gt_channel = gt_channel * 1e6
-        print("gt_channel",  gt_channel[0])
-        pred_channel = pred_channel * 1e6
-        print("pred_channel", pred_channel[0])
-        # print("pred_channel",  pred_channel[0])
-        channel_loss = ((gt_channel.real - pred_channel.real )**2).mean() + ((gt_channel.imag - pred_channel.imag )**2).mean()
-        channel_loss = channel_loss/ 1e3
-        # channel_loss =  1e6 * channel_loss
-        # print("channel_loss", channel_loss)
-        total_loss += channel_loss
+
+        # NMSE: normalized by ||gt_channel||^2 (scale-invariant)
+        # Scale channels to avoid tiny denominator / overflow (raw values are ~1e-6)
+        scale = 1e6
+        gt_scaled = gt_channel * scale
+        pred_scaled = pred_channel * scale
+        mse = ((gt_scaled.real - pred_scaled.real) ** 2 + (gt_scaled.imag - pred_scaled.imag) ** 2).mean()
+        gt_norm_sq = (gt_scaled.real ** 2 + gt_scaled.imag ** 2).mean()
+        # Clamp denominator to avoid explosion when gt is very weak
+        channel_loss = mse / (gt_norm_sq.clamp(min=1e-6) + 1e-10)
+ 
+        # Clamp loss to prevent channel term from exploding and dominating total loss
+        channel_loss = channel_loss.clamp(max=100.0)
+        total_loss += 0.01 * channel_loss
         # az_t = az_t.masked_fill(mask, 0)
         # el_t = el_t.masked_fill(mask, 0)
 

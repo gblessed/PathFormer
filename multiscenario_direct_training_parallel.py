@@ -1,5 +1,4 @@
 # %%
-# %%
 # !pip install DeepMIMO==4.0.0b10
 
 # %%
@@ -36,93 +35,68 @@ from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from models import PathDecoder, GPTPathDecoder
 from dataset.dataloaders import PreTrainMySeqDataLoader
-from k_means_utils import *
-from utils.utils import add_noise_to_paths
+from utils.utils import *
 
 from tqdm import tqdm
 import torch
 import numpy as np
 import pandas as pd
 import os
+import sys
 
-csv_log_file = "playground_final_scenario_results.csv"
+csv_log_file = "weighted_final_scenario_results.csv"
 
-# %%
-# scenario = 'city_89_nairobi_3p5'
-scenario = 'city_0_newyork_3p5'
-
-dm.download(scenario)
-dataset = dm.load(scenario, )
-
-# %%
-dataset.scene.plot()
-
-
-# %%
-dm.info()
-
+# Scenarios: when run from run_llm_orun.sh, scenario names are passed as CLI args (one per process).
+# With no args, run last 5 from the full list.
+all_scenarios = [
+    'city_47_chicago_3p5', 'city_23_beijing_3p5', 'city_91_xiangyang_3p5', 'city_17_seattle_3p5_s',
+    'city_12_fortworth_3p5', 'city_92_sãopaulo_3p5', 'city_35_san_francisco_3p5',
+    'city_10_florida_villa_7gp_1758095156175', 'city_19_oklahoma_3p5_s', 'city_74_chiyoda_3p5'
+]
+scenarios_to_run = sys.argv[1:] if len(sys.argv) > 1 else all_scenarios[-5:]
 
 # %%
-config = {
-    "BATCH_SIZE":128,
-    "PAD_VALUE": 0,
-    "USE_WANDB": False,
-    "LR":2e-5,
-    "epochs" : 100,
-    "interaction_weight": 0.01,
-    "experiment": f"{scenario}_interacaction_all_inter_str_dec_all_repeat",
-    "hidden_dim": 512,
-    "n_layers": 8,
-    "n_heads": 8,
-    "use_delay_kmeans": True,
-    "n_clusters": 4,
-    "max_path_len_clusters": 26,
-    "delay_only_loss": False,
-    "TARGET_NOISE_PROB": 0.2,
-    "TARGET_NOISE_PARAMS": None,
-    "use_cluster_mlp_head": True,
-    "pretrained_checkpoint": "checkpoints2/noise_enc_direct_city_47_chicago_3p5_interacaction_all_inter_str_dec_all_repeat_best_model_checkpoint.pth",
-}
-
-
-
+# Initial setup only when not called with scenario args (interactive / single run)
+if len(sys.argv) <= 1:
+    scenario = 'city_89_nairobi_3p5'
+    dm.download(scenario)
+    dataset = dm.load(scenario, )
+else:
+    dataset = None
 
 # %%
-
-
-
-# %%
-
-
-# %%
-train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power", pad_value=config["PAD_VALUE"])
-
-train_loader = torch.utils.data.DataLoader(
-    dataset     = train_data,
-    batch_size  = config['BATCH_SIZE'],
-    shuffle     = True,
-    collate_fn= train_data.collate_fn
-    )
-val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power", pad_value=config["PAD_VALUE"])
-val_loader = torch.utils.data.DataLoader(
-    dataset     = val_data,
-    batch_size  = config['BATCH_SIZE'],
-    shuffle     = False,
-    collate_fn= val_data.collate_fn
-    )
-
-for item in train_loader:
-    print(f"Prompt shape: {item[0].shape}, Paths shape: {item[1].shape}, Num paths shape: {item[2].shape}")
-    
-    break
-
-
-# %%
-print("No. of Train Points   : ", train_data.__len__())
-print("Batch Size           : ", config["BATCH_SIZE"])
-print("Train Batches        : ", train_loader.__len__())
-print("No. of Train Points   : ", val_data.__len__())
-print("Val Batches          : ", val_loader.__len__())
+if dataset is not None:
+    dataset.scene.plot()
+    dm.info()
+    config = {
+        "BATCH_SIZE":128,
+        "PAD_VALUE": 0,
+        "USE_WANDB": False,
+        "LR":2e-5,
+        "epochs" : 100,
+        "interaction_weight": 0.01,  # Weight for interaction loss
+        "experiment": f"{scenario}_interacaction_all_inter_str_dec_all_repeat",
+        "hidden_dim": 512,
+        "n_layers": 8,
+        "n_heads": 8,
+        "TARGET_NOISE_PROB": 0.2,
+        "TARGET_NOISE_PARAMS": None,
+        "time_step_weighted": False,
+    }
+    train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
+    train_loader = torch.utils.data.DataLoader(
+        dataset=train_data, batch_size=config['BATCH_SIZE'], shuffle=True, collate_fn=train_data.collate_fn)
+    val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power")
+    val_loader = torch.utils.data.DataLoader(
+        dataset=val_data, batch_size=config['BATCH_SIZE'], shuffle=False, collate_fn=val_data.collate_fn)
+    for item in train_loader:
+        print(f"Prompt shape: {item[0].shape}, Paths shape: {item[1].shape}, Num paths shape: {item[2].shape}")
+        break
+    print("No. of Train Points   : ", train_data.__len__())
+    print("Batch Size           : ", config["BATCH_SIZE"])
+    print("Train Batches        : ", train_loader.__len__())
+    print("No. of Train Points   : ", val_data.__len__())
+    print("Val Batches          : ", val_loader.__len__())
 
 def compute_stop_metrics(path_count, targets, pad_value=0):
     """
@@ -137,13 +111,8 @@ def compute_stop_metrics(path_count, targets, pad_value=0):
 
 
 
-def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_value=0, data_stats=None,
-                   cluster_lookup_data=None):
-    """
-    cluster_lookup_data: (train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means) for NN lookup by (x,y)
-    """
+def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
     model.eval()
-    device = next(model.parameters()).device
 
     delay_errors = []
     power_errors = []
@@ -168,9 +137,6 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
             prompts = prompts.cuda()
             paths = paths.cuda()
             path_lengths = path_lengths.cuda()
-            path_padding_mask = path_padding_mask.cuda()
-            # For cluster lookup use tx_idx=0 per sample when not provided (single-Tx)
-            batch_tx_idx = torch.zeros(prompts.size(0), dtype=torch.long, device=prompts.device)
          
             # Inner tqdm to show per-sample progress
             inner_bar = tqdm(range(prompts.size(0)), 
@@ -179,27 +145,14 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
 
 
             for b in inner_bar:
-                cluster_emb_b, cluster_pad_b = None, None
-                if cluster_lookup_data is not None:
-                    prom_b = prompts[b:b+1]
-                    tx_b = batch_tx_idx[b:b+1]
-                    train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means = cluster_lookup_data
-                    if hasattr(model, "cluster_mlp_head"):
-                        cluster_emb_b, cluster_pad_b = lookup_cluster_raw_by_position(
-                            prom_b, tx_b, train_rx_pos, train_tx_idx, train_step_means, train_valid_len, device
-                        )
-                    else:
-                        cluster_emb_b, cluster_pad_b = lookup_cluster_embs_by_position(
-                            prom_b, tx_b, train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, device
-                        )
-                generated, path_lengths_pred, inter_str_pred = generate_paths_no_env(
-                    model, prompts[b], max_steps=max_generate,
-                    cluster_emb=cluster_emb_b, cluster_pad_mask=cluster_pad_b
-                )
-                # print("generated",generated[:])
+                generated, path_lengths_pred, inter_str_pred = generate_paths_no_env(model, prompts[b], max_steps=max_generate)
 
                 generated = generated.cuda()
-                # Use path length for valid positions (mask-based; pad value is 0)
+                # ground truth: delay, power, phase, aoa_az, aoa_el
+                # gt = paths[b][1:, :5]
+
+                # Mask padded values
+                # valid_mask = (gt[:,0] != train_data.pad_value)
                 n_valid = int(round(path_lengths[b].item() * 25))
                 gt = paths[b][1:1 + n_valid, :5]
 
@@ -207,40 +160,37 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
                 pred = generated[:T]
                 gt = gt[:T]
 
-                delay_pred = pred[:,0]
+   
+                # delay_pred = (pred[:,0]  * data_stats["delay"]["std"] ) + data_stats["delay"]["mean"]
+                # delay = (gt[:,0] * data_stats["delay"]["std"]) + data_stats["delay"]["mean"]
+
+
+                # power_pred = (pred[:,1]  * data_stats["power"]["std"] ) + data_stats["power"]["mean"]
+                # power = (gt[:,1] * data_stats["power"]["std"]) + data_stats["power"]["mean"]
+
+                # phase_pred = (pred[:,2]  * data_stats["phase"]["std"] ) + data_stats["phase"]["mean"]
+                # phase = (gt[:,2] * data_stats["phase"]["std"]) + data_stats["phase"]["mean"]
+
+
+                # aoa_az_pred = (pred[:,3]  * data_stats["aoa_az"]["std"] ) + data_stats["aoa_az"]["mean"]
+                # aoa_az = (gt[:,3] * data_stats["aoa_az"]["std"]) + data_stats["aoa_az"]["mean"]
+              
+                # aoa_el_pred = (pred[:,4]  * data_stats["aoa_el"]["std"] ) + data_stats["aoa_el"]["mean"]
+                # aoa_el = (gt[:,4] * data_stats["aoa_el"]["std"]) + data_stats["aoa_el"]["mean"]
+
+                delay_pred = pred[:,0]  
+                # delay_pred = torch.cumsum(delay_pred, dim=0)
                 delay = gt[:,0]
 
-                power_pred = pred[:,1]
-                power = gt[:,1]
 
+                power_pred = pred[:,1]  
+                power = gt[:,1] 
                 phase_pred = pred[:,2]
                 phase = gt[:,2]
-
-                aoa_az_pred = pred[:,3]
-                aoa_az = gt[:,3]
-              
-                aoa_el_pred = pred[:,4]
-                aoa_el = gt[:,4]
-
-                # Denormalize when data_stats provided (model was trained on normalized data)
-                if data_stats is not None:
-                    def denorm(x, key):
-                        if key not in data_stats:
-                            return x
-                        s, m = data_stats[key]["std"], data_stats[key]["mean"]
-                        return x * s + m
-                    delay_pred = denorm(pred[:,0], "delay")
-                    delay = denorm(gt[:,0], "delay")
-                    power_pred = denorm(pred[:,1], "power")
-                    power = denorm(gt[:,1], "power")
-                    phase_pred = denorm(pred[:,2], "phase")
-                    phase = denorm(gt[:,2], "phase")
-                    aoa_az_pred = denorm(pred[:,3], "aoa_az")
-                    aoa_az = denorm(gt[:,3], "aoa_az")
-                    aoa_el_pred = denorm(pred[:,4], "aoa_el")
-                    aoa_el = denorm(gt[:,4], "aoa_el")
-
-
+                aoa_az_pred = pred[:,3]  
+                aoa_az = gt[:,3]           
+                aoa_el_pred = pred[:,4]    
+                aoa_el = gt[:,4] 
                 # ---- Compute Metrics ----
                 delay_rmse = torch.mean((delay_pred - delay)**2).sqrt().item()
                 delay_mae = torch.mean(torch.abs(delay_pred - delay)).item()
@@ -271,11 +221,10 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
                 el_rmse = torch.mean(el_circular_dist**2).sqrt().item()
                 el_mae = torch.mean(torch.abs(el_circular_dist)).item()
 
-                # Path length RMSE (path_lengths in [0,1]; pathcounts raw; use same scale)
-                pl_pred = path_lengths_pred.squeeze()
-                pl_gt = path_lengths[b].squeeze()
-                length_rmse = (torch.mean((pl_pred - pl_gt)**2)).sqrt().item()
-                length_mae = (torch.mean(torch.abs(pl_pred - pl_gt))).item()
+                # Path length RMSE
+                # print(path_lengths_pred, path_lengths[b],)
+                length_rmse = (torch.mean( (path_lengths_pred - path_lengths[b])**2)).sqrt().item()
+                length_mae = (torch.mean(torch.abs(path_lengths_pred - path_lengths[b]))).item()
 
 
                 # Save metrics
@@ -325,18 +274,18 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
                         "test_el_mae": el_mae,
                         "test_stop_length_mae": length_mae,
                     })
-            print("Batch evaluation complete.")
+            # print("Batch evaluation complete.")
             
-            print("\n================= Up toBATCH EVALUATION RESULTS =================")
-            print(f"Avg Delay RMSE           : {np.mean(delay_errors):.4f} µs")
-            print(f"Avg Power RMSE           : {np.mean(power_errors):.4f} dB")
-            print(f"Avg Phase RMSE           : {np.mean(phase_errors):.4f} degrees")
-            print(f"Avg Path Length RMSE     : {np.mean(path_length_rmses):.4f}")
-            print(f"Avg Delay MAE           : {np.mean(delay_maes):.4f} µs")
-            print(f"Avg Power MAE           : {np.mean(power_maes):.4f} dB")
-            print(f"Avg Phase MAE           : {np.mean(phase_maes):.4f} degrees")
-            print(f"Avg Path Length MAE     : {np.mean(path_length_maes):.4f}")
-            print("============================================================")
+            # print("\n================= Up toBATCH EVALUATION RESULTS =================")
+            # print(f"Avg Delay RMSE           : {np.mean(delay_errors):.4f} µs")
+            # print(f"Avg Power RMSE           : {np.mean(power_errors):.4f} dB")
+            # print(f"Avg Phase RMSE           : {np.mean(phase_errors):.4f} degrees")
+            # print(f"Avg Path Length RMSE     : {np.mean(path_length_rmses):.4f}")
+            # print(f"Avg Delay MAE           : {np.mean(delay_maes):.4f} µs")
+            # print(f"Avg Power MAE           : {np.mean(power_maes):.4f} dB")
+            # print(f"Avg Phase MAE           : {np.mean(phase_maes):.4f} degrees")
+            # print(f"Avg Path Length MAE     : {np.mean(path_length_maes):.4f}")
+            # print("============================================================")
             
 
     # ---- Final Aggregated Results ----
@@ -386,37 +335,19 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
 
 
 
-def show_example(model, val_loader, sample_index=0, k=25, plot=True, cluster_lookup_data=None):
+def show_example(model, val_loader, sample_index=0, k=25, plot=True):
     model.eval()
-    batch = next(iter(val_loader))
-    prompts, paths, path_lengths, interactions = batch[0], batch[1], batch[2], batch[3]
-    path_padding_mask = batch[6] if len(batch) > 6 else None
+    prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask = next(iter(val_loader))
     
     prompts = prompts.cuda()
     paths = paths.cuda()
     path_lengths = path_lengths.cuda()
-    device = next(model.parameters()).device
-    batch_tx_idx = torch.zeros(prompts.size(0), dtype=torch.long, device=device)
     
-    cluster_emb_b, cluster_pad_b = None, None
-    if cluster_lookup_data is not None:
-        prom_b = prompts[sample_index:sample_index+1]
-        tx_b = batch_tx_idx[sample_index:sample_index+1]
-        train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means = cluster_lookup_data
-        if hasattr(model, "cluster_mlp_head"):
-            cluster_emb_b, cluster_pad_b = lookup_cluster_raw_by_position(
-                prom_b, tx_b, train_rx_pos, train_tx_idx, train_step_means, train_valid_len, device
-            )
-        else:
-            cluster_emb_b, cluster_pad_b = lookup_cluster_embs_by_position(
-                prom_b, tx_b, train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, device
-            )
-    pred_paths, path_lengths_pred, inter_str_pred = generate_paths_no_env(
-        model, prompts[sample_index], cluster_emb=cluster_emb_b, cluster_pad_mask=cluster_pad_b
-    )
+    pred_paths, path_lengths_pred, inter_str_pred = generate_paths_no_env(model, prompts[sample_index])
     
 
     pred = pred_paths[0]  # (T,3)
+    # Use path length to get valid positions (mask-based; pad value is 0)
     n_valid = int(round(path_lengths[sample_index].item() * 25))
     gt = paths[sample_index][1:1 + n_valid, :3]  # Extract only 3D components (T,3)
 
@@ -456,90 +387,29 @@ def show_example(model, val_loader, sample_index=0, k=25, plot=True, cluster_loo
         plt.show()
 
 
-# def evaluate_generation(val_loader, n_samples=3):
-#     model.eval()
-#     for i, (prompts, paths) in enumerate(val_loader):
-#         if i >= n_samples:
-#             break
-#         pred, path_lengths_pred = generate_paths_no_env(model, prompts[0])  # autoregressive generation
-#         print(f"path lengths pred: {path_lengths_pred[0]}")
-#         print(f"\nSample {i}")
-#         print("GT paths (first 5):")
-#         print(paths[0][:5])
-#         print("Predicted paths (first 5):")
-#         print(pred[0][:5])
+def evaluate_generation(val_loader, n_samples=3):
+    model.eval()
+    for i, (prompts, paths) in enumerate(val_loader):
+        if i >= n_samples:
+            break
+        pred, path_lengths_pred = generate_paths_no_env(model, prompts[0])  # autoregressive generation
+        print(f"path lengths pred: {path_lengths_pred[0]}")
+        print(f"\nSample {i}")
+        print("GT paths (first 5):")
+        print(paths[0][:5])
+        print("Predicted paths (first 5):")
+        print(pred[0][:5])
 
-# # %%
+# %%
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
-class PathDecoderClusterMLPHead(nn.Module):
+def train_with_interactions(model, train_loader, val_loader, config, train_data, task=None):
     """
-    Frozen PathDecoder backbone + MLP head that takes (hidden_state, cluster_embedding) per step.
-    Load a checkpoint from multiscenario_direct_training (no clusters), freeze backbone, train only this head.
+    Modified training loop with interaction prediction.
     """
-    def __init__(self, backbone, hidden_dim, n_clusters=4, max_path_len_clusters=26):
-        super().__init__()
-        self.backbone = backbone
-        self.hidden_dim = hidden_dim
-        self.n_clusters = n_clusters
-        self.max_path_len_clusters = max_path_len_clusters
-        for p in self.backbone.parameters():
-            p.requires_grad = False
-        self.cluster_embed = nn.Linear(1, hidden_dim)
-        head_in = hidden_dim * 2
-        self.out_delay = nn.Linear(head_in, 1)
-        self.out_power = nn.Linear(head_in, 1)
-        self.out = nn.Sequential(
-            nn.Linear(head_in, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, 6),
-        )
-        self.interaction_head = nn.Linear(head_in, 4)
-        self.cluster_mlp_head = True
 
-    def forward(self, prompts, paths, interactions, cluster_emb=None, cluster_pad_mask=None):
-        B, T, _ = paths.shape
-        h_paths, prefix_flat = self.backbone.forward_hidden(prompts, paths, interactions)
-        if cluster_emb is None:
-            cluster_emb = torch.zeros(B, T, self.hidden_dim, device=h_paths.device, dtype=h_paths.dtype)
-        else:
-            if cluster_emb.shape[-1] == 1:
-                cluster_emb = self.cluster_embed(cluster_emb)
-            if cluster_emb.shape[1] != T:
-                if cluster_emb.shape[1] < T:
-                    pad = torch.zeros(B, T - cluster_emb.shape[1], self.hidden_dim, device=cluster_emb.device, dtype=cluster_emb.dtype)
-                    cluster_emb = torch.cat([cluster_emb, pad], dim=1)
-                else:
-                    cluster_emb = cluster_emb[:, :T]
-        concat = torch.cat([h_paths, cluster_emb], dim=-1)
-        delay_pred = self.out_delay(concat).squeeze(-1)
-        power_pred = self.out_power(concat).squeeze(-1)
-        out = self.out(concat)
-        phase_sin_pred = out[:, :, 0]
-        phase_cos_pred = out[:, :, 1]
-        phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)
-        az_sin_pred = out[:, :, 2]
-        az_cos_pred = out[:, :, 3]
-        el_sin_pred = out[:, :, 4]
-        el_cos_pred = out[:, :, 5]
-        az_pred = torch.atan2(az_sin_pred, az_cos_pred)
-        el_pred = torch.atan2(el_sin_pred, el_cos_pred)
-        interaction_logits = self.interaction_head(concat)
-        path_length_pred = self.backbone.pathcount_head(prefix_flat)
-        return (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
-                az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
-                path_length_pred, interaction_logits)
-
-
-def train_with_interactions(model, train_loader, val_loader, config, train_data, task=None, cluster_lookup_data=None):
-    """
-    cluster_lookup_data: (train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len) for NN lookup by (x,y)
-    """
-    device = next(model.parameters()).device
     best_val_loss = float('inf')
 
 
@@ -557,25 +427,12 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
         train_loss_el = []
         train_ch_nmse = []
         pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False)
-        for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:
+        for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:  # NEW: added interactions
             prompts = prompts.cuda()
             paths = paths.cuda()
             path_lengths = path_lengths.cuda()
-            interactions = interactions.cuda()
+            interactions = interactions.cuda()  # NEW
             path_padding_mask = path_padding_mask.cuda()
-            batch_tx_idx = torch.zeros(prompts.size(0), dtype=torch.long, device=prompts.device)
-            
-            cluster_emb, cluster_pad_mask = None, None
-            if cluster_lookup_data is not None:
-                train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means = cluster_lookup_data
-                if hasattr(model, "cluster_mlp_head"):
-                    cluster_emb, cluster_pad_mask = lookup_cluster_raw_by_position(
-                        prompts, batch_tx_idx, train_rx_pos, train_tx_idx, train_step_means, train_valid_len, device
-                    )
-                else:
-                    cluster_emb, cluster_pad_mask = lookup_cluster_embs_by_position(
-                        prompts, batch_tx_idx, train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, device
-                    )
 
             paths_in = paths[:, :-1, :]
             p_noise = config.get("TARGET_NOISE_PROB", 0.0)
@@ -585,17 +442,11 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
             interactions_in = interactions[:, :-1, :]
 
             paths_out = paths[:, 1:, :]
-            interactions_out = interactions[:, 1:, :]
+            interactions_out = interactions[:, 1:, :]  # NEW: shift targets
 
-            if hasattr(model, "cluster_mlp_head"):
-                (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
-                 az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
-                 path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in,
-                                                              cluster_emb=cluster_emb, cluster_pad_mask=cluster_pad_mask)
-            else:
-                (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
-                 az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
-                 path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
+            (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+             az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+             path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
 
             (total_loss, loss_delay, loss_power, loss_phase,
              loss_az, loss_el, loss_path_length, loss_interaction,loss_channel) = masked_loss(
@@ -604,12 +455,13 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                 path_length_pred, interaction_logits, paths_out, path_lengths,
                 interactions_out, finetune=task, pad_value=train_data.pad_value,
                 interaction_weight=config.get("interaction_weight", 0.1),
-                delay_only=config.get("delay_only_loss", False),
-                path_padding_mask=path_padding_mask
+                path_padding_mask=path_padding_mask,
+                time_step_weighted=config.get("time_step_weighted", False)
             )
             optimizer.zero_grad()
             total_loss.backward()
             optimizer.step()
+            
             path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1), 
                                                     path_lengths)
             ch_nmse = 0
@@ -661,13 +513,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                 "ch_nmse":f"{ch_nmse:.4f}",
                 "lr": f"{current_lr:.2e}"
             })
+
         scheduler.step()
-        try:
-            attn = getattr(model.decoder.layers[-1], "cross_attn_weights", None) if hasattr(model, "decoder") else None
-        except Exception:
-            attn = None
-        print("Train delay_pred->",delay_pred[0])
-        print("Train actual->",paths_out[0, :, 0])
         avg_train_loss = np.mean(train_losses)
         avg_train_delay = np.mean(train_loss_delay)
         avg_train_power = np.mean(train_loss_power)
@@ -694,51 +541,28 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
             pbar = tqdm(val_loader, desc=f"Epoch {epoch} [Val]", leave=False)
             # prepare val aoa loss lists
 
-            for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:
+            for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:  # NEW
                 prompts = prompts.cuda()
                 paths = paths.cuda()
                 path_lengths = path_lengths.cuda()
-                interactions = interactions.cuda()
+                interactions = interactions.cuda()  # NEW
                 path_padding_mask = path_padding_mask.cuda()
-                batch_tx_idx = torch.zeros(prompts.size(0), dtype=torch.long, device=prompts.device)
-
-                cluster_emb, cluster_pad_mask = None, None
-                if cluster_lookup_data is not None:
-                    train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means = cluster_lookup_data
-                    if hasattr(model, "cluster_mlp_head"):
-                        cluster_emb, cluster_pad_mask = lookup_cluster_raw_by_position(
-                            prompts, batch_tx_idx, train_rx_pos, train_tx_idx, train_step_means, train_valid_len, device
-                        )
-                    else:
-                        cluster_emb, cluster_pad_mask = lookup_cluster_embs_by_position(
-                            prompts, batch_tx_idx, train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, device
-                        )
 
                 paths_in = paths[:, :-1, :]
+                p_noise = config.get("TARGET_NOISE_PROB", 0.0)
+                if p_noise > 0:
+                    paths_in = add_noise_to_paths(paths_in, path_padding_mask[:, :-1], p_noise=p_noise,
+                                                  noise_params=config.get("TARGET_NOISE_PARAMS"))
                 interactions_in = interactions[:, :-1, :]
 
                 paths_out = paths[:, 1:, :]
-                interactions_out = interactions[:, 1:, :]
+                interactions_out = interactions[:, 1:, :]  # NEW: shift targets
 
-                if hasattr(model, "cluster_mlp_head"):
-                    (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
-                     az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
-                     path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in,
-                                                                  cluster_emb=cluster_emb, cluster_pad_mask=cluster_pad_mask)
-                else:
-                    (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
-                     az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
-                     path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
+                (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                 az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                 path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
                 
-                try:
-                    if hasattr(model, "decoder") and hasattr(model.decoder, "layers"):
-                        attn = getattr(model.decoder.layers[-1], "cross_attn_weights", None)
-                    elif hasattr(model, "backbone") and hasattr(model.backbone, "decoder"):
-                        attn = getattr(model.backbone.decoder.layers[-1], "cross_attn_weights", None)
-                    else:
-                        attn = None
-                except Exception:
-                    attn = None
+                
 
                 (total_loss, loss_delay, loss_power, loss_phase,
                 loss_az, loss_el, loss_path_length, loss_interaction,loss_channel) = masked_loss(
@@ -747,8 +571,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                     path_length_pred, interaction_logits, paths_out, path_lengths,
                     interactions_out, finetune=task, pad_value=train_data.pad_value,
                     interaction_weight=config.get("interaction_weight", 0.1),
-                    delay_only=config.get("delay_only_loss", False),
-                    path_padding_mask=path_padding_mask
+                    path_padding_mask=path_padding_mask,
+                    time_step_weighted=config.get("time_step_weighted", False)
                 )
 
                 path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1), 
@@ -768,11 +592,7 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                     "val_loss": f"{total_loss.item():.4f}",
                     "inter": f"{loss_interaction.item():.4f}",  # NEW
                 })
-        print("Val delay_pred->",delay_pred[0])
-        print("Val actual->",paths_out[0, :, 0])
 
-        
-        # print("val attn->",attn[0, 1,])
         avg_val_loss = np.mean(val_losses)
         avg_val_delay = np.mean(val_loss_delay)
         avg_val_power = np.mean(val_loss_power)
@@ -840,7 +660,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
 # model = PathDecoder().to(device)
 
 
-
+config = {}
+config["USE_WANDB"] = False
 
 # %%
 if config["USE_WANDB"]:
@@ -860,13 +681,8 @@ if config["USE_WANDB"]:
 
 
 # %%
-
-
-# %%
-all_scenarios = ['city_47_chicago_3p5', 'city_23_beijing_3p5', 'city_91_xiangyang_3p5', 'city_17_seattle_3p5_s', 'city_12_fortworth_3p5', 'city_92_sãopaulo_3p5', 'city_35_san_francisco_3p5', 'city_10_florida_villa_7gp_1758095156175', 'city_19_oklahoma_3p5_s', 'city_74_chiyoda_3p5']
-
-for scenario in all_scenarios:
-# %%
+for scenario in scenarios_to_run:
+    dm.download(scenario)
     dataset = dm.load(scenario, )
     print(f"######### Training on Scenario {scenario}  #########")
     config = {
@@ -874,87 +690,18 @@ for scenario in all_scenarios:
         "PAD_VALUE": 0,
         "USE_WANDB": False,
         "LR": 2e-5,
-        "epochs": 100,
+        "epochs": 300,
         "interaction_weight": 0.01,
-        "experiment": f"delay_only_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
+        "experiment": f"weighted_noise_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
         "hidden_dim": 512,
         "n_layers": 8,
         "n_heads": 8,
-        "use_delay_kmeans": True,
-        "n_clusters": 5,
-        "max_path_len_clusters": 25,
-        "delay_only_loss": False,
+        "time_step_weighted": True,
         "TARGET_NOISE_PROB": 0.2,
         "TARGET_NOISE_PARAMS": None,
-        "use_cluster_mlp_head": False,
-        "pretrained_checkpoint": "checkpoints2/noise_enc_direct_city_47_chicago_3p5_interacaction_all_inter_str_dec_all_repeat_best_model_checkpoint.pth",
     }
-
-    train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power", pad_value=config["PAD_VALUE"], normalizers=None, apply_normalizers=[])
-    val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power", pad_value=config["PAD_VALUE"], normalizers=None, apply_normalizers=[])
-
-    n_clusters = config.get("n_clusters", 4)
-    max_path_len_clusters = config.get("max_path_len_clusters", 26)
-    cluster_centers = None
-    cluster_lookup_data = None
-
-    if config.get("use_cluster_mlp_head", False):
-        backbone = PathDecoder(
-            prompt_dim=6,
-            hidden_dim=config["hidden_dim"],
-            n_layers=config["n_layers"],
-            n_heads=config["n_heads"],
-            pad_value=config["PAD_VALUE"],
-        ).to(device)
-        ckpt_path = config.get("pretrained_checkpoint", "checkpoints2/noise_enc_direct_city_47_chicago_3p5_interacaction_all_inter_str_dec_all_repeat_best_model_checkpoint.pth")
-        if os.path.exists(ckpt_path):
-            ckpt = torch.load(ckpt_path, map_location=device)
-            backbone.load_state_dict(ckpt["model_state_dict"], strict=True)
-            print(f"Loaded backbone from {ckpt_path}")
-        model = PathDecoderClusterMLPHead(backbone, config["hidden_dim"], n_clusters=n_clusters, max_path_len_clusters=max_path_len_clusters).to(device)
-        if config.get("use_delay_kmeans", False):
-            if not hasattr(train_data, "mins"):
-                train_data.mins = np.array([0.0, 0.0, 0.0])
-                train_data.maxs = np.array([1.0, 1.0, 1.0])
-            if "tx_idx" not in train_data.dataset_filtered:
-                train_data.dataset_filtered["tx_idx"] = [0] * len(train_data.dataset_filtered["delay"])
-            cluster_centers = compute_delay_kmeans_cluster_centers(train_data, max_path_len=max_path_len_clusters, n_clusters=n_clusters)
-            train_rx_pos, train_tx_idx, train_step_means, train_valid_len = precompute_train_cluster_raw(
-                train_data, cluster_centers, max_path_len=max_path_len_clusters, device=device
-            )
-            cluster_lookup_data = (train_rx_pos, train_tx_idx, None, train_valid_len, train_step_means)
-            print("Precomputed train cluster raw for NN lookup by (x,y) (cluster_embed learned)")
-    else:
-        model = PathDecoder(
-            prompt_dim=6,
-            hidden_dim=config["hidden_dim"],
-            n_layers=config["n_layers"],
-            n_heads=config["n_heads"],
-            pad_value=config["PAD_VALUE"],
-        ).to(device)
-        if config.get("use_delay_kmeans", False):
-            if not hasattr(train_data, "mins"):
-                train_data.mins = np.array([0.0, 0.0, 0.0])
-                train_data.maxs = np.array([1.0, 1.0, 1.0])
-            if "tx_idx" not in train_data.dataset_filtered:
-                train_data.dataset_filtered["tx_idx"] = [0] * len(train_data.dataset_filtered["delay"])
-            cluster_centers = compute_delay_kmeans_cluster_centers(train_data, max_path_len=max_path_len_clusters, n_clusters=n_clusters)
-            cluster_centers_tensor = torch.tensor(cluster_centers, dtype=torch.float32)
-            cluster_embed_fn = nn.Linear(1, config["hidden_dim"]).to(device)
-            train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means = precompute_train_cluster_embeddings(
-                train_data, cluster_centers, cluster_embed_fn,
-                max_path_len=max_path_len_clusters, n_clusters=n_clusters,
-                hidden_dim=config["hidden_dim"], device=device
-            )
-            cluster_lookup_data = (train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means)
-            print("Precomputed train cluster embeddings for NN lookup by (x,y)")
+    model = PathDecoder(hidden_dim=config["hidden_dim"], n_layers=config["n_layers"], n_heads=config["n_heads"]).to(device)
     print("Total trainable parameters:", count_parameters(model))
-    # print(f"train_tx_idx: {train_tx_idx.shape} {train_tx_idx[:6]}")
-    # print(f"train_rx_pos: {train_rx_pos.shape} {train_rx_pos[:6]}")
-    # print(f"train_valid_len: {train_valid_len.shape} {train_valid_len.max()}")
-    # print(f"train_step_means: {train_step_means.shape} {train_step_means[0].T}")
-
-
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["LR"])
     # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=2, mode="min")
@@ -972,13 +719,17 @@ for scenario in all_scenarios:
     checkpoint_path = f"{config['experiment']}_best_model_checkpoint.pth"
     os.makedirs("checkpoints2", exist_ok=True)
     checkpoint_path = os.path.join("checkpoints2", checkpoint_path)
-
+    # train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
+    # data_stats = get_dataset_statistics(train_data)
+    
+    train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power", normalizers = None, apply_normalizers =[], pad_value=config["PAD_VALUE"] )
     train_loader = torch.utils.data.DataLoader(
         dataset     = train_data,
         batch_size  = config['BATCH_SIZE'],
         shuffle     = True,
         collate_fn= train_data.collate_fn
         )
+    val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power", normalizers = None, apply_normalizers =[], pad_value=config["PAD_VALUE"] )
     val_loader = torch.utils.data.DataLoader(
         dataset     = val_data,
         batch_size  = config['BATCH_SIZE'],
@@ -987,7 +738,7 @@ for scenario in all_scenarios:
         )
 
     # Train
-    train_with_interactions(model, train_loader, val_loader, config, train_data, cluster_lookup_data=cluster_lookup_data)
+    train_with_interactions(model, train_loader, val_loader, config, train_data)
     
     # %% [markdown]
     # 
@@ -1028,8 +779,7 @@ for scenario in all_scenarios:
     checkpoint_path
 
     # %%
-    results = evaluate_model(model, val_loader, pad_value=config["PAD_VALUE"], data_stats=None,
-                             cluster_lookup_data=cluster_lookup_data)
+    results = evaluate_model(model, val_loader)
     # print(results)
     avg_delay, avg_power, avg_phase, avg_az, avg_el, avg_path_length_rmse, avg_delay_mae, avg_power_mae, avg_phase_mae, avg_az_mae, avg_el_mae, avg_path_length_mae  = results
     # (avg_delay, avg_power, avg_phase, avg_path_length_rmse, 
@@ -1063,32 +813,6 @@ for scenario in all_scenarios:
 
     # %%
     # show_example(model, val_loader, sample_index=24)
-
-
-
-
-
-# %%
-best_epoch, best_loss = load_best_checkpoint(model, checkpoint_path=checkpoint_path)
-
-# %%
-checkpoint_path
-
-# %%
-results = evaluate_model(model, val_loader, pad_value=config["PAD_VALUE"], data_stats=None,
-                            cluster_lookup_data=cluster_lookup_data)
-
-# %%
-
-
-# %%
-
-
-
-# %%
-
-
-# %%
 
 
 

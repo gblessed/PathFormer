@@ -43,7 +43,7 @@ import numpy as np
 import pandas as pd
 import os
 
-csv_log_file = "final_scenario_results.csv"
+csv_log_file = "weighted_final_scenario_results.csv"
 
 # %%
 scenario = 'city_89_nairobi_3p5'
@@ -75,6 +75,8 @@ config = {
     # Target noise for generalization
     "TARGET_NOISE_PROB": 0.2,
     "TARGET_NOISE_PARAMS": None,  # None = defaults; or e.g. {"delay": {"mean": 0, "std": 0.05}, "power": {"mean": 0, "std": 0.002}, ...}
+    # Weight path loss by (1/2)**n over time steps (earlier steps weighted more)
+    "time_step_weighted": False,
 }
 
 
@@ -474,7 +476,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                 path_length_pred, interaction_logits, paths_out, path_lengths,
                 interactions_out, finetune=task, pad_value=train_data.pad_value,
                 interaction_weight=config.get("interaction_weight", 0.1),
-                path_padding_mask=path_padding_mask
+                path_padding_mask=path_padding_mask,
+                time_step_weighted=config.get("time_step_weighted", False)
             )
             optimizer.zero_grad()
             total_loss.backward()
@@ -589,7 +592,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                     path_length_pred, interaction_logits, paths_out, path_lengths,
                     interactions_out, finetune=task, pad_value=train_data.pad_value,
                     interaction_weight=config.get("interaction_weight", 0.1),
-                    path_padding_mask=path_padding_mask
+                    path_padding_mask=path_padding_mask,
+                    time_step_weighted=config.get("time_step_weighted", False)
                 )
 
                 path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1), 
@@ -699,7 +703,7 @@ if config["USE_WANDB"]:
 # %%
 all_scenarios = ['city_47_chicago_3p5', 'city_23_beijing_3p5', 'city_91_xiangyang_3p5', 'city_17_seattle_3p5_s', 'city_12_fortworth_3p5', 'city_92_sãopaulo_3p5', 'city_35_san_francisco_3p5', 'city_10_florida_villa_7gp_1758095156175', 'city_19_oklahoma_3p5_s', 'city_74_chiyoda_3p5']
 
-for scenario in all_scenarios:
+for scenario in all_scenarios[:1]:
 # %%
     # model = GPTPathDecoder().to(device)
     model = PathDecoder(hidden_dim=config["hidden_dim"], n_layers = config["n_layers"], n_heads=config["n_heads"]).to(device)
@@ -714,10 +718,11 @@ for scenario in all_scenarios:
         "LR":2e-5,
         "epochs" : 300,
         "interaction_weight": 0.01,  # Weight for interaction loss
-        "experiment": f"noise_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
+        "experiment": f"snoise_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
         "hidden_dim": 512,
         "n_layers": 8,
         "n_heads": 8,
+        "time_step_weighted": False,
         "TARGET_NOISE_PROB": 0.2,
         "TARGET_NOISE_PARAMS": None,
     }

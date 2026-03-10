@@ -34,7 +34,7 @@ from sklearn.metrics import mean_squared_error
 import numpy as np
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from models import GPTPathDecoder, PathDecoderEnv, PathFormerBeamPredictor
+from models import GPTPathDecoder, PathDecoderEnv, PathFormerBeamPredictor, PathDecoder
 from dataset.dataloaders import MySeqDataLoader,PreTrainMySeqDataLoader
 from utils.utils import *
 import pandas as pd
@@ -250,7 +250,11 @@ def generate_paths(model, prompt, env, env_prop, max_steps=25, stop_threshold=0.
 
     for t in range(max_steps):
         # Forward pass - unpack expanded outputs (including aoa preds)
-        d, p, s, c, ph, az_s, az_c, az, el_s, el_c, el, pathcounts, inter_str_logits = model(prompt, cur, inter_str, env_prop, env,  pre_train = False)
+        if isinstance(model, PathDecoderEnv):
+            d, p, s, c, ph, az_s, az_c, az, el_s, el_c, el, pathcounts, inter_str_logits = model(prompt, cur, inter_str, env_prop, env,  pre_train = False)
+        else:
+            d, p, s, c, ph, az_s, az_c, az, el_s, el_c, el, pathcounts, inter_str_logits = model(prompt, cur, inter_str)
+
 
         # Get last timestep predictions
         d_t = d[:, -1]           # (1,)
@@ -489,7 +493,7 @@ S = make_dft_codebook()
 
 # %%
 all_scenarios = ['city_47_chicago_3p5','city_10_florida_villa_7gp_1758095156175',  'city_23_beijing_3p5', 'city_91_xiangyang_3p5', 'city_17_seattle_3p5_s', 'city_12_fortworth_3p5', 'city_92_sãopaulo_3p5', 'city_35_san_francisco_3p5',  'city_19_oklahoma_3p5_s', 'city_74_chiyoda_3p5']
-
+all_scenarios = ['city_47_chicago_3p5','city_10_florida_villa_7gp_1758095156175',  'city_23_beijing_3p5', 'city_19_oklahoma_3p5_s', 'city_35_san_francisco_3p5', 'city_92_sãopaulo_3p5']
 
 
 for scenario in all_scenarios:
@@ -502,7 +506,8 @@ for scenario in all_scenarios:
         "epochs" : 100,
         "interaction_weight": 0.01,  # Weight for interaction loss
         "experiment": f"true_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
-        "base_experiment": f"true_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
+        "base_experiment": f"weighted_noise_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
+        
         "hidden_dim": 512,
         "n_layers": 8,
         "n_heads": 8,
@@ -533,7 +538,7 @@ for scenario in all_scenarios:
         collate_fn= val_data.collate_fn
         )
 
-    backbone_model = PathDecoderEnv(hidden_dim=config["hidden_dim"], n_layers = config["n_layers"], n_heads=config["n_heads"]).to(device)
+    backbone_model = PathDecoder(hidden_dim=config["hidden_dim"], n_layers = config["n_layers"], n_heads=config["n_heads"]).to(device)
     # model = PathDecoder().to(device)
     # model = GPTPathDecoder().to(device)
     best_val_loss = float('inf')

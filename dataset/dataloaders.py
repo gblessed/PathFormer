@@ -347,7 +347,9 @@ class PreTrainMySeqDataLoader(torch.utils.data.Dataset):
                 prompt.extend( vals )
             
             else:
-                prompt.extend( (self.dataset_filtered[k][idx] - self.mins)/ ( self.maxs -  self.mins) )
+                prompt.extend( self.dataset_filtered[k][idx] )
+                # prompt.extend( (self.dataset_filtered[k][idx] - self.mins)/ ( self.maxs -  self.mins) )
+
 
 
 
@@ -407,7 +409,7 @@ class PreTrainMySeqDataLoader(torch.utils.data.Dataset):
         return (torch.tensor(prompt, dtype=torch.float32),
                 torch.tensor(paths, dtype=torch.float32),
                 torch.tensor(num_paths, dtype=torch.float32) / 25.0,
-                torch.tensor(interactions, dtype=torch.float32),
+                torch.tensor(np.array(interactions), dtype=torch.float32),
                 torch.tensor(environment, dtype=torch.float32),
                 torch.tensor(environment_material_props, dtype=torch.float32),)  # NEW
 

@@ -701,6 +701,241 @@ class PathFormerBeamPredictor(nn.Module):
     # You can implement backbone_extract_features by calling the same logic as PathFormerLocalizer.extract_backbone_features
 
 
+
+class PathDecoderClusterEncoderAttention(nn.Module):
+    """
+    Learns center+std embeddings and injects them into encoder conditioning via prompt augmentation.
+    """
+    def __init__(self, backbone, hidden_dim, cluster_feature_dim, prompt_dim=6):
+        super().__init__()
+        self.backbone = backbone
+        self.hidden_dim = hidden_dim
+        self.cluster_feature_dim = cluster_feature_dim
+        self.cluster_embed = nn.Sequential(
+            nn.Linear(cluster_feature_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+        )
+        self.cluster_to_prompt = nn.Linear(hidden_dim, prompt_dim)
+
+    def forward(self, prompts, paths, interactions, cluster_center_std=None, cluster_pad_mask=None):
+        B = prompts.size(0)
+        if cluster_center_std is None:
+            cluster_summary = torch.zeros(B, self.hidden_dim, device=prompts.device, dtype=prompts.dtype)
+        else:
+            emb = self.cluster_embed(cluster_center_std)  # (B, Tc, H)
+            
+            if cluster_pad_mask is not None:
+                valid = (~cluster_pad_mask).float().unsqueeze(-1)
+                denom = valid.sum(dim=1).clamp_min(1.0)
+                cluster_summary = (emb * valid).sum(dim=1) / denom
+            else:
+                cluster_summary = emb.mean(dim=1)
+        prompts_aug = prompts + self.cluster_to_prompt(cluster_summary)
+        return self.backbone(prompts_aug, paths, interactions)
+
+class PathDecoderClusterEncoderAttention(nn.Module):
+    def __init__(self, prompt_dim=6, hidden_dim=512, n_layers=6, n_heads=4, cluster_feature_dim=None, max_T = 35, prefix_len=4, pad_value=500):
+        super().__init__()
+        self.pad_value = pad_value
+        self.hidden_dim = hidden_dim
+        self.cluster_feature_dim = cluster_feature_dim
+        self.cluster_embed = nn.Sequential(
+            nn.Linear(cluster_feature_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+        )
+        self.cluster_to_prompt = nn.Linear(hidden_dim, prompt_dim)
+
+
+        self.prefix_len = prefix_len
+        self.max_T = max_T
+        # Project prompt → conditioning token
+        # self.prompt_proj = nn.Linear(prompt_dim, hidden_dim)
+        self.prompt_to_prefix = nn.Linear(prompt_dim, prefix_len * hidden_dim)
+        # Path token embedding: delay, power, sin(phase), cos(phase), is_last
+        self.path_in = nn.Linear(12, hidden_dim)
+
+        # self.encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=4, batch_first=True)
+        # self.encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=2)
+        # Positional embedding for sequence steps
+        self.pos_emb = nn.Embedding(max_T, hidden_dim)  # supports up to 25 paths
+
+        # self.environment_embed = nn.Linear(4, hidden_dim)  # Example input size
+        # self.environment_prop_embed = nn.Linear(6, hidden_dim)
+        
+        self.interaction_head = nn.Linear(hidden_dim, 4)
+
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=hidden_dim,
+            nhead=n_heads,
+            dim_feedforward=4*hidden_dim,
+            batch_first=True
+        )
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=n_layers)
+
+        # Output head: predict next (delay, power, phase_sin, phase_cos, is_stop)
+        self.out_delay = nn.Sequential(
+                    nn.Linear(hidden_dim, 1),
+                    # nn.Sigmoid(),
+                )
+        
+        self.out_power = nn.Sequential(
+                    nn.Linear(hidden_dim, 1),
+                )
+        self.out = nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.GELU(),
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.GELU(),
+                    nn.Linear(hidden_dim, 6),
+                    # nn.Tanh(),
+                )
+        self.pathcount_head = nn.Sequential(
+            nn.Linear(prefix_len * hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1)
+        )
+    def forward(self, prompts, paths, interactions, cluster_center_std=None, cluster_pad_mask=None):
+        """
+        prompts: (B, prompt_dim)
+        paths: (B, T, 4)
+        interactions: (B,T,4)
+        cluster_center_std: (B, Tc, cluster_feature_dim)
+        cluster_pad_mask: (B, Tc)
+        environment: (B, 4)
+        environment_properties: (B, T2, 6)
+        Returns:
+            delay_pred, power_pred, phase_sin_pred, phase_cos_pred,
+            phase_pred, pathcounts, interaction_logits
+        """
+        B = prompts.size(0)
+      
+        emb = self.cluster_embed(cluster_center_std)
+        # print("cluster_center_std.shape: ", cluster_center_std[-0])
+        # print("emb.shape: ", emb.shape)
+        B, T, _ = paths.shape
+        prefix_raw = self.prompt_to_prefix(prompts)
+        prefix = prefix_raw.view(B, self.prefix_len, self.hidden_dim)
+        # print("prefix.shape: ", prefix.shape)
+        prefix_with_cluster = torch.cat([prefix, emb], dim=1)
+        memory_mask = torch.cat([torch.zeros(B, self.prefix_len, device=prompts.device), cluster_pad_mask], dim=1)
+        # encoded_prefix = self.encoder(prefix_with_cluster,src_key_padding_mask=memory_mask)
+        # print("prefix_with_cluster.shape: ", prefix_with_cluster.shape)
+        # Convert phase to sin/cos
+        phase = paths[:,:,2]
+        sinp = torch.sin(phase)
+        cosp = torch.cos(phase)
+
+        aoa_az = paths[:, :, 3]
+        sin_az = torch.sin(aoa_az)
+        cos_az = torch.cos(aoa_az)
+
+        aoa_el = paths[:, :, 4]
+        sin_el = torch.sin(aoa_el)
+        cos_el = torch.cos(aoa_el)
+
+        x = torch.stack([paths[:,:,0], paths[:,:,1], sinp, cosp, sin_az, cos_az, sin_el,cos_el ], dim=-1)
+
+
+        interactions_clean = interactions.clone()
+        interactions_clean[interactions_clean == -1] = 0
+
+        x = torch.cat([x, interactions_clean], dim=-1)
+        # Embed tokens
+        x = self.path_in(x)   # (B, T, hidden)
+         ## Append SOS embedding
+        # x = torch.cat([env_embedding, env_prop_embedding, x], dim=1)
+
+        total_len =   T
+        pos = self.pos_emb(torch.arange(total_len, device=x.device))  # (T, hidden)
+
+        x = x + pos
+        # Conditioning prompt token
+
+        
+
+        # Construct causal mask
+        causal_mask = torch.triu(torch.ones(total_len, total_len, device=x.device), diagonal=1).bool()
+
+        # Decode
+        h = self.decoder(
+            tgt=x,
+            # memory=prefix_with_cluster,
+            memory=prefix_with_cluster,
+            tgt_mask=causal_mask,
+            memory_key_padding_mask=memory_mask,
+        )
+
+        h_paths = h[:, :, :]
+
+        # Predict next-step parameters
+        out = self.out(h_paths)  # (B, T, 5)
+
+        delay_pred = self.out_delay(h_paths).squeeze(-1)
+        power_pred = self.out_power(h_paths).squeeze(-1)
+        phase_sin_pred = out[:, :, 0]
+        phase_cos_pred = out[:, :, 1]
+        phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)
+
+        az_sin_pred = out[:, :, 2]
+        az_cos_pred = out[:, :, 3]
+        el_sin_pred = out[:, :, 4]
+        el_cos_pred = out[:, :, 5]
+
+        phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)
+        az_pred = torch.atan2(az_sin_pred, az_cos_pred)
+        el_pred = torch.atan2(el_sin_pred, el_cos_pred)
+        interaction_logits = self.interaction_head(h_paths)
+        ## path count prediction
+        prefix_flat = prefix.reshape(B, -1)
+        pathcounts = self.pathcount_head(prefix_flat)
+
+        return (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+            az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+            pathcounts, interaction_logits)
+
+    def forward_hidden(self, prompts, paths, interactions):
+        """
+        Same as forward but returns (h_paths, prefix_flat) before output heads.
+        Used by wrappers that need hidden state (e.g. cluster MLP head).
+        """
+        B, T, _ = paths.shape
+        prefix_raw = self.prompt_to_prefix(prompts)
+        prefix = prefix_raw.view(B, self.prefix_len, self.hidden_dim)
+        phase = paths[:, :, 2]
+        sinp = torch.sin(phase)
+        cosp = torch.cos(phase)
+        aoa_az = paths[:, :, 3]
+        sin_az = torch.sin(aoa_az)
+        cos_az = torch.cos(aoa_az)
+        aoa_el = paths[:, :, 4]
+        sin_el = torch.sin(aoa_el)
+        cos_el = torch.cos(aoa_el)
+        x = torch.stack([paths[:, :, 0], paths[:, :, 1], sinp, cosp, sin_az, cos_az, sin_el, cos_el], dim=-1)
+        interactions_clean = interactions.clone()
+        interactions_clean[interactions_clean == -1] = 0
+        x = torch.cat([x, interactions_clean], dim=-1)
+        x = self.path_in(x)
+        total_len = T
+        pos = self.pos_emb(torch.arange(total_len, device=x.device))
+        x = x + pos
+        causal_mask = torch.triu(torch.ones(total_len, total_len, device=x.device), diagonal=1).bool()
+        h = self.decoder(tgt=x, memory=prefix, tgt_mask=causal_mask)
+        h_paths = h[:, :, :]
+        prefix_flat = prefix.reshape(B, -1)
+        return h_paths, prefix_flat
+
+
+
+
+
+
+
+
+
 class PathFormerLocalizer(nn.Module):
     def __init__(self, pretrained_backbone, hidden_dim=512):
         super().__init__()

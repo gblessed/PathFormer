@@ -37,6 +37,7 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 from models import PathDecoder, GPTPathDecoder
 from dataset.dataloaders import PreTrainMySeqDataLoader
 from k_means_utils import *
+from models import PathDecoderClusterEncoderAttention
 from utils.utils import add_noise_to_paths
 
 from tqdm import tqdm
@@ -44,8 +45,9 @@ import torch
 import numpy as np
 import pandas as pd
 import os
-
-csv_log_file = "playground_final_scenario_results.csv"
+from sklearn.cluster import KMeans
+import gc
+csv_log_file = "cluster_noise_results.csv"
 
 # %%
 # scenario = 'city_89_nairobi_3p5'
@@ -77,11 +79,11 @@ config = {
     "use_delay_kmeans": True,
     "n_clusters": 4,
     "max_path_len_clusters": 26,
+    "cluster_features": ["delay", "power"],
     "delay_only_loss": False,
     "TARGET_NOISE_PROB": 0.2,
     "TARGET_NOISE_PARAMS": None,
-    "use_cluster_mlp_head": True,
-    "pretrained_checkpoint": "checkpoints2/noise_enc_direct_city_47_chicago_3p5_interacaction_all_inter_str_dec_all_repeat_best_model_checkpoint.pth",
+    # "pretrained_checkpoint": "checkpoints2/noise_enc_direct_city_47_chicago_3p5_interacaction_all_inter_str_dec_all_repeat_best_model_checkpoint.pth",
 }
 
 
@@ -140,7 +142,7 @@ def compute_stop_metrics(path_count, targets, pad_value=0):
 def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_value=0, data_stats=None,
                    cluster_lookup_data=None):
     """
-    cluster_lookup_data: (train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means) for NN lookup by (x,y)
+    cluster_lookup_data: (train_rx_pos, train_tx_idx, train_cluster_center_std, train_valid_len) for NN lookup by (x,y)
     """
     model.eval()
     device = next(model.parameters()).device
@@ -179,22 +181,17 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
 
 
             for b in inner_bar:
-                cluster_emb_b, cluster_pad_b = None, None
+                cluster_center_std_b, cluster_pad_b = None, None
                 if cluster_lookup_data is not None:
                     prom_b = prompts[b:b+1]
                     tx_b = batch_tx_idx[b:b+1]
-                    train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means = cluster_lookup_data
-                    if hasattr(model, "cluster_mlp_head"):
-                        cluster_emb_b, cluster_pad_b = lookup_cluster_raw_by_position(
-                            prom_b, tx_b, train_rx_pos, train_tx_idx, train_step_means, train_valid_len, device
-                        )
-                    else:
-                        cluster_emb_b, cluster_pad_b = lookup_cluster_embs_by_position(
-                            prom_b, tx_b, train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, device
-                        )
+                    train_rx_pos, train_tx_idx, train_cluster_center_std, train_valid_len = cluster_lookup_data
+                    cluster_center_std_b, cluster_pad_b = lookup_cluster_center_std_by_position(
+                        prom_b, tx_b, train_rx_pos, train_tx_idx, train_cluster_center_std, train_valid_len, device
+                    )
                 generated, path_lengths_pred, inter_str_pred = generate_paths_no_env(
                     model, prompts[b], max_steps=max_generate,
-                    cluster_emb=cluster_emb_b, cluster_pad_mask=cluster_pad_b
+                    cluster_center_std=cluster_center_std_b, cluster_pad_mask=cluster_pad_b
                 )
                 # print("generated",generated[:])
 
@@ -325,18 +322,18 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
                         "test_el_mae": el_mae,
                         "test_stop_length_mae": length_mae,
                     })
-            print("Batch evaluation complete.")
+            # print("Batch evaluation complete.")
             
-            print("\n================= Up toBATCH EVALUATION RESULTS =================")
-            print(f"Avg Delay RMSE           : {np.mean(delay_errors):.4f} µs")
-            print(f"Avg Power RMSE           : {np.mean(power_errors):.4f} dB")
-            print(f"Avg Phase RMSE           : {np.mean(phase_errors):.4f} degrees")
-            print(f"Avg Path Length RMSE     : {np.mean(path_length_rmses):.4f}")
-            print(f"Avg Delay MAE           : {np.mean(delay_maes):.4f} µs")
-            print(f"Avg Power MAE           : {np.mean(power_maes):.4f} dB")
-            print(f"Avg Phase MAE           : {np.mean(phase_maes):.4f} degrees")
-            print(f"Avg Path Length MAE     : {np.mean(path_length_maes):.4f}")
-            print("============================================================")
+            # print("\n================= Up toBATCH EVALUATION RESULTS =================")
+            # print(f"Avg Delay RMSE           : {np.mean(delay_errors):.4f} µs")
+            # print(f"Avg Power RMSE           : {np.mean(power_errors):.4f} dB")
+            # print(f"Avg Phase RMSE           : {np.mean(phase_errors):.4f} degrees")
+            # print(f"Avg Path Length RMSE     : {np.mean(path_length_rmses):.4f}")
+            # print(f"Avg Delay MAE           : {np.mean(delay_maes):.4f} µs")
+            # print(f"Avg Power MAE           : {np.mean(power_maes):.4f} dB")
+            # print(f"Avg Phase MAE           : {np.mean(phase_maes):.4f} degrees")
+            # print(f"Avg Path Length MAE     : {np.mean(path_length_maes):.4f}")
+            # print("============================================================")
             
 
     # ---- Final Aggregated Results ----
@@ -398,21 +395,16 @@ def show_example(model, val_loader, sample_index=0, k=25, plot=True, cluster_loo
     device = next(model.parameters()).device
     batch_tx_idx = torch.zeros(prompts.size(0), dtype=torch.long, device=device)
     
-    cluster_emb_b, cluster_pad_b = None, None
+    cluster_center_std_b, cluster_pad_b = None, None
     if cluster_lookup_data is not None:
         prom_b = prompts[sample_index:sample_index+1]
         tx_b = batch_tx_idx[sample_index:sample_index+1]
-        train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means = cluster_lookup_data
-        if hasattr(model, "cluster_mlp_head"):
-            cluster_emb_b, cluster_pad_b = lookup_cluster_raw_by_position(
-                prom_b, tx_b, train_rx_pos, train_tx_idx, train_step_means, train_valid_len, device
-            )
-        else:
-            cluster_emb_b, cluster_pad_b = lookup_cluster_embs_by_position(
-                prom_b, tx_b, train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, device
-            )
+        train_rx_pos, train_tx_idx, train_cluster_center_std, train_valid_len = cluster_lookup_data
+        cluster_center_std_b, cluster_pad_b = lookup_cluster_center_std_by_position(
+            prom_b, tx_b, train_rx_pos, train_tx_idx, train_cluster_center_std, train_valid_len, device
+        )
     pred_paths, path_lengths_pred, inter_str_pred = generate_paths_no_env(
-        model, prompts[sample_index], cluster_emb=cluster_emb_b, cluster_pad_mask=cluster_pad_b
+        model, prompts[sample_index], cluster_center_std=cluster_center_std_b, cluster_pad_mask=cluster_pad_b
     )
     
 
@@ -476,68 +468,267 @@ def count_parameters(model):
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class PathDecoderClusterMLPHead(nn.Module):
+def _convert_feature_value(key, value):
+    if key == "delay":
+        return float(value) * 1e6
+    if key == "power":
+        return float(value) * 0.01
+    if key in ["phase", "aoa_az", "aoa_el"]:
+        return float(value) * (np.pi / 180.0)
+    return float(value)
+
+
+def _normalize_feature_value(dataloader_obj, key, value):
+    if getattr(dataloader_obj, "normalizers", None) and getattr(dataloader_obj, "apply_normalizers", None):
+        if key in dataloader_obj.apply_normalizers:
+            stat = dataloader_obj.normalizers.get(key, None)
+            if stat is not None:
+                return (value - stat["mean"]) / (stat["std"] + 1e-8)
+    return value
+
+
+def _sorted_path_indices(df, idx, sort_by):
+    delays_raw = np.array(df["delay"][idx])
+    powers_raw = np.array(df["power"][idx])
+    if sort_by == "power":
+        return np.argsort(-powers_raw)
+    return np.argsort(delays_raw)
+
+
+def compute_feature_kmeans_cluster_stats(dataloader_obj, feature_keys, max_path_len=26, n_clusters=4, random_state=42):
     """
-    Frozen PathDecoder backbone + MLP head that takes (hidden_state, cluster_embedding) per step.
-    Load a checkpoint from multiscenario_direct_training (no clusters), freeze backbone, train only this head.
+    Cluster selected path features at each path step, per Tx.
+    Returns:
+      centers: (n_tx, max_path_len, n_clusters, F)
+      stds:    (n_tx, max_path_len, n_clusters, F)
     """
-    def __init__(self, backbone, hidden_dim, n_clusters=4, max_path_len_clusters=26):
+    df = dataloader_obj.dataset_filtered
+    n_samples = len(df["delay"])
+    n_features = len(feature_keys)
+    if n_samples == 0:
+        z = np.zeros((1, max_path_len, n_clusters, n_features), dtype=np.float32)
+        return z, z.copy()
+
+    tx_indices = np.array(df.get("tx_idx", [0] * n_samples))
+    if tx_indices.size == 0:
+        tx_indices = np.zeros(n_samples, dtype=np.int64)
+    n_tx = max(1, int(tx_indices.max()) + 1)
+
+    step_vectors = [[[] for _ in range(max_path_len)] for _ in range(n_tx)]
+    for idx in range(n_samples):
+        tx = int(tx_indices[idx])
+        indices = _sorted_path_indices(df, idx, dataloader_obj.sort_by)
+        step = 0
+        for path_idx in indices:
+            if step >= max_path_len:
+                break
+            vec = []
+            broken = False
+            for k in feature_keys:
+                v = np.array(df[k][idx])[path_idx]
+                if np.isnan(v):
+                    broken = True
+                    break
+                vv = _convert_feature_value(k, v)
+                vv = _normalize_feature_value(dataloader_obj, k, vv)
+                vec.append(vv)
+            if broken:
+                break
+            step_vectors[tx][step].append(np.array(vec, dtype=np.float32))
+            step += 1
+
+    centers = np.zeros((n_tx, max_path_len, n_clusters, n_features), dtype=np.float32)
+    stds = np.zeros((n_tx, max_path_len, n_clusters, n_features), dtype=np.float32)
+
+    for tx in range(n_tx):
+        for t in range(max_path_len):
+            arr = np.array(step_vectors[tx][t], dtype=np.float32)
+            if len(arr) == 0:
+                continue
+            if len(arr) < n_clusters:
+                reps = [arr[min(i, len(arr) - 1)] for i in range(n_clusters)]
+                c = np.stack(reps, axis=0)
+                s = np.stack([np.std(arr, axis=0)] * n_clusters, axis=0)
+            else:
+                km = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
+                labels = km.fit_predict(arr)
+                c = km.cluster_centers_.astype(np.float32)
+                s = np.zeros_like(c)
+                for k in range(n_clusters):
+                    pts = arr[labels == k]
+                    if len(pts) > 0:
+                        s[k] = np.std(pts, axis=0)
+            centers[tx, t] = c
+            stds[tx, t] = s
+    return centers, stds
+
+
+def precompute_train_cluster_center_std_sequences(dataloader_obj, cluster_centers, cluster_stds, feature_keys, max_path_len=26):
+    """
+    For each training sample, select nearest cluster center per step and concatenate center+std.
+    Returns:
+      train_rx_pos (N,2), train_tx_idx (N,), train_cluster_center_std (N,max_path_len,2F), train_valid_len (N,)
+    """
+    df = dataloader_obj.dataset_filtered
+    n_samples = len(df["delay"])
+    mins = np.array(dataloader_obj.mins)
+    maxs = np.array(dataloader_obj.maxs)
+    norm = getattr(dataloader_obj, "normalizers", None)
+    apply_norm = getattr(dataloader_obj, "apply_normalizers", None) or []
+    n_features = len(feature_keys)
+
+    train_rx_pos = []
+    train_tx_idx = []
+    train_center_std = []
+    valid_lens = []
+
+    for idx in range(n_samples):
+        tx = int(df["tx_idx"][idx])
+        rx_raw = np.array(df["rx_pos"][idx], dtype=np.float32)
+        rx_xy = rx_raw[:2]
+        if norm and "pos" in apply_norm:
+            rx_xy = (rx_xy - norm["rx_pos"]["mean"][:2]) / (norm["rx_pos"]["std"][:2] + 1e-8)
+        else:
+            rx_xy = (rx_xy - mins[:2]) / (maxs[:2] - mins[:2] + 1e-8)
+        train_rx_pos.append(rx_xy)
+        train_tx_idx.append(tx)
+
+        seq = np.zeros((max_path_len, 2 * n_features), dtype=np.float32)
+        indices = _sorted_path_indices(df, idx, dataloader_obj.sort_by)
+        step = 0
+        for path_idx in indices:
+            if step >= max_path_len:
+                break
+            vec = []
+            broken = False
+            for k in feature_keys:
+                v = np.array(df[k][idx])[path_idx]
+                if np.isnan(v):
+                    broken = True
+                    break
+                vv = _convert_feature_value(k, v)
+                vv = _normalize_feature_value(dataloader_obj, k, vv)
+                vec.append(vv)
+            if broken:
+                break
+            vec = np.array(vec, dtype=np.float32)
+            cc = cluster_centers[tx, step]
+            dist = np.linalg.norm(cc - vec[None, :], axis=1)
+            nn = int(np.argmin(dist))
+            seq[step, :n_features] = cluster_centers[tx, step, nn]
+            seq[step, n_features:] = cluster_stds[tx, step, nn]
+            step += 1
+        valid_lens.append(step)
+        train_center_std.append(seq)
+
+    return (
+        np.array(train_rx_pos, dtype=np.float32),
+        np.array(train_tx_idx, dtype=np.int64),
+        np.array(train_center_std, dtype=np.float32),
+        np.array(valid_lens, dtype=np.int64),
+    )
+
+
+def lookup_cluster_center_std_by_position(prompts, tx_idx, train_rx_pos, train_tx_idx, train_cluster_center_std, train_valid_len, device, prompt_rx_slice=(3, 5)):
+    """
+    NN lookup by (x,y): retrieve per-user cluster center+std sequence.
+    """
+    B = prompts.shape[0]
+    rx_query = prompts[:, prompt_rx_slice[0]:prompt_rx_slice[1]].detach().cpu().numpy()
+    max_T = train_cluster_center_std.shape[1]
+    D = train_cluster_center_std.shape[2]
+    batch = np.zeros((B, max_T, D), dtype=np.float32)
+    pad_mask = np.ones((B, max_T), dtype=bool)
+    for b in range(B):
+        tx_b = int(tx_idx[b].item()) if torch.is_tensor(tx_idx[b]) else int(tx_idx[b])
+        pos_b = rx_query[b]
+        mask = (train_tx_idx == tx_b)
+        if not np.any(mask):
+            continue
+        pos_subset = train_rx_pos[mask]
+        idx_subset = np.where(mask)[0]
+        dist = np.sqrt(np.sum((pos_subset - pos_b) ** 2, axis=1))
+        nn_idx = idx_subset[np.argmin(dist)]
+        batch[b] = train_cluster_center_std[nn_idx]
+        valid = train_valid_len[nn_idx]
+        pad_mask[b, :valid] = False
+        pad_mask[b, valid:] = True
+    return (
+        torch.tensor(batch, dtype=torch.float32, device=device),
+        torch.tensor(pad_mask, dtype=torch.bool, device=device),
+    )
+
+
+class PathDecoderClusterEncoderAdapter(nn.Module):
+    """
+    Learns center+std embeddings and injects them into encoder conditioning via prompt augmentation.
+    """
+    def __init__(self, backbone, hidden_dim, cluster_feature_dim, prompt_dim=6):
         super().__init__()
         self.backbone = backbone
         self.hidden_dim = hidden_dim
-        self.n_clusters = n_clusters
-        self.max_path_len_clusters = max_path_len_clusters
-        for p in self.backbone.parameters():
-            p.requires_grad = False
-        self.cluster_embed = nn.Linear(1, hidden_dim)
-        head_in = hidden_dim * 2
-        self.out_delay = nn.Linear(head_in, 1)
-        self.out_power = nn.Linear(head_in, 1)
-        self.out = nn.Sequential(
-            nn.Linear(head_in, hidden_dim),
+        self.cluster_feature_dim = cluster_feature_dim
+        self.cluster_embed = nn.Sequential(
+            nn.Linear(cluster_feature_dim, hidden_dim),
             nn.GELU(),
-            nn.Linear(hidden_dim, 6),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
         )
-        self.interaction_head = nn.Linear(head_in, 4)
-        self.cluster_mlp_head = True
+        self.cluster_to_prompt = nn.Linear(hidden_dim, prompt_dim)
 
-    def forward(self, prompts, paths, interactions, cluster_emb=None, cluster_pad_mask=None):
-        B, T, _ = paths.shape
-        h_paths, prefix_flat = self.backbone.forward_hidden(prompts, paths, interactions)
-        if cluster_emb is None:
-            cluster_emb = torch.zeros(B, T, self.hidden_dim, device=h_paths.device, dtype=h_paths.dtype)
+    def forward(self, prompts, paths, interactions, cluster_center_std=None, cluster_pad_mask=None):
+        B = prompts.size(0)
+        if cluster_center_std is None:
+            cluster_summary = torch.zeros(B, self.hidden_dim, device=prompts.device, dtype=prompts.dtype)
         else:
-            if cluster_emb.shape[-1] == 1:
-                cluster_emb = self.cluster_embed(cluster_emb)
-            if cluster_emb.shape[1] != T:
-                if cluster_emb.shape[1] < T:
-                    pad = torch.zeros(B, T - cluster_emb.shape[1], self.hidden_dim, device=cluster_emb.device, dtype=cluster_emb.dtype)
-                    cluster_emb = torch.cat([cluster_emb, pad], dim=1)
-                else:
-                    cluster_emb = cluster_emb[:, :T]
-        concat = torch.cat([h_paths, cluster_emb], dim=-1)
-        delay_pred = self.out_delay(concat).squeeze(-1)
-        power_pred = self.out_power(concat).squeeze(-1)
-        out = self.out(concat)
-        phase_sin_pred = out[:, :, 0]
-        phase_cos_pred = out[:, :, 1]
-        phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)
-        az_sin_pred = out[:, :, 2]
-        az_cos_pred = out[:, :, 3]
-        el_sin_pred = out[:, :, 4]
-        el_cos_pred = out[:, :, 5]
-        az_pred = torch.atan2(az_sin_pred, az_cos_pred)
-        el_pred = torch.atan2(el_sin_pred, el_cos_pred)
-        interaction_logits = self.interaction_head(concat)
-        path_length_pred = self.backbone.pathcount_head(prefix_flat)
-        return (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
-                az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
-                path_length_pred, interaction_logits)
+            emb = self.cluster_embed(cluster_center_std)  # (B, Tc, H)
+            if cluster_pad_mask is not None:
+                valid = (~cluster_pad_mask).float().unsqueeze(-1)
+                denom = valid.sum(dim=1).clamp_min(1.0)
+                cluster_summary = (emb * valid).sum(dim=1) / denom
+            else:
+                cluster_summary = emb.mean(dim=1)
+        prompts_aug = prompts + self.cluster_to_prompt(cluster_summary)
+        return self.backbone(prompts_aug, paths, interactions)
+
+
+
+
+def generate_paths_no_env(model, prompt, max_steps=25, stop_threshold=0.5, cluster_center_std=None, cluster_pad_mask=None):
+    """
+    Local autoregressive generation with optional cluster center+std conditioning.
+    """
+    model.eval()
+    device = next(model.parameters()).device
+    prompt = prompt.unsqueeze(0).to(device)
+    cur = torch.zeros(1, 1, 5, device=device)
+    inter_str = -1 * torch.ones(1, 1, 4, device=device)
+    outputs = []
+    outputs_inter_str = []
+    for _ in range(max_steps):
+        d, p, s, c, ph, az_s, az_c, az, el_s, el_c, el, pathcounts, inter_str_logits = model(
+            prompt, cur, inter_str, cluster_center_std=cluster_center_std, cluster_pad_mask=cluster_pad_mask
+        )
+        d_t = d[:, -1]
+        p_t = p[:, -1]
+        ph_t = ph[:, -1]
+        az_t = az[:, -1]
+        el_t = el[:, -1]
+        inter_logits_t = inter_str_logits[:, -1]
+        inter_pred_t = (torch.sigmoid(inter_logits_t) > 0.5).float()
+        outputs.append(torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1))
+        outputs_inter_str.append(inter_pred_t)
+        next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1).unsqueeze(1)
+        cur = torch.cat([cur, next_path], dim=1)
+        inter_str = torch.cat([inter_str, inter_pred_t.unsqueeze(1)], dim=1)
+    return (torch.stack(outputs, dim=1).squeeze(0).detach().cpu(),
+            pathcounts,
+            torch.stack(outputs_inter_str, dim=1).squeeze(0).detach().cpu())
 
 
 def train_with_interactions(model, train_loader, val_loader, config, train_data, task=None, cluster_lookup_data=None):
     """
-    cluster_lookup_data: (train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len) for NN lookup by (x,y)
+    cluster_lookup_data: (train_rx_pos, train_tx_idx, train_cluster_center_std, train_valid_len) for NN lookup by (x,y)
     """
     device = next(model.parameters()).device
     best_val_loss = float('inf')
@@ -565,17 +756,12 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
             path_padding_mask = path_padding_mask.cuda()
             batch_tx_idx = torch.zeros(prompts.size(0), dtype=torch.long, device=prompts.device)
             
-            cluster_emb, cluster_pad_mask = None, None
+            cluster_center_std, cluster_pad_mask = None, None
             if cluster_lookup_data is not None:
-                train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means = cluster_lookup_data
-                if hasattr(model, "cluster_mlp_head"):
-                    cluster_emb, cluster_pad_mask = lookup_cluster_raw_by_position(
-                        prompts, batch_tx_idx, train_rx_pos, train_tx_idx, train_step_means, train_valid_len, device
-                    )
-                else:
-                    cluster_emb, cluster_pad_mask = lookup_cluster_embs_by_position(
-                        prompts, batch_tx_idx, train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, device
-                    )
+                train_rx_pos, train_tx_idx, train_cluster_center_std, train_valid_len = cluster_lookup_data
+                cluster_center_std, cluster_pad_mask = lookup_cluster_center_std_by_position(
+                    prompts, batch_tx_idx, train_rx_pos, train_tx_idx, train_cluster_center_std, train_valid_len, device
+                )
 
             paths_in = paths[:, :-1, :]
             p_noise = config.get("TARGET_NOISE_PROB", 0.0)
@@ -587,15 +773,12 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
             paths_out = paths[:, 1:, :]
             interactions_out = interactions[:, 1:, :]
 
-            if hasattr(model, "cluster_mlp_head"):
-                (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
-                 az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
-                 path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in,
-                                                              cluster_emb=cluster_emb, cluster_pad_mask=cluster_pad_mask)
-            else:
-                (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
-                 az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
-                 path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
+            (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+             az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+             path_length_pred, interaction_logits) = model(
+                prompts, paths_in, interactions_in,
+                cluster_center_std=cluster_center_std, cluster_pad_mask=cluster_pad_mask
+            )
 
             (total_loss, loss_delay, loss_power, loss_phase,
              loss_az, loss_el, loss_path_length, loss_interaction,loss_channel) = masked_loss(
@@ -666,8 +849,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
             attn = getattr(model.decoder.layers[-1], "cross_attn_weights", None) if hasattr(model, "decoder") else None
         except Exception:
             attn = None
-        print("Train delay_pred->",delay_pred[0])
-        print("Train actual->",paths_out[0, :, 0])
+        # print("Train delay_pred->",delay_pred[0])
+        # print("Train actual->",paths_out[0, :, 0])
         avg_train_loss = np.mean(train_losses)
         avg_train_delay = np.mean(train_loss_delay)
         avg_train_power = np.mean(train_loss_power)
@@ -702,17 +885,12 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                 path_padding_mask = path_padding_mask.cuda()
                 batch_tx_idx = torch.zeros(prompts.size(0), dtype=torch.long, device=prompts.device)
 
-                cluster_emb, cluster_pad_mask = None, None
+                cluster_center_std, cluster_pad_mask = None, None
                 if cluster_lookup_data is not None:
-                    train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means = cluster_lookup_data
-                    if hasattr(model, "cluster_mlp_head"):
-                        cluster_emb, cluster_pad_mask = lookup_cluster_raw_by_position(
-                            prompts, batch_tx_idx, train_rx_pos, train_tx_idx, train_step_means, train_valid_len, device
-                        )
-                    else:
-                        cluster_emb, cluster_pad_mask = lookup_cluster_embs_by_position(
-                            prompts, batch_tx_idx, train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, device
-                        )
+                    train_rx_pos, train_tx_idx, train_cluster_center_std, train_valid_len = cluster_lookup_data
+                    cluster_center_std, cluster_pad_mask = lookup_cluster_center_std_by_position(
+                        prompts, batch_tx_idx, train_rx_pos, train_tx_idx, train_cluster_center_std, train_valid_len, device
+                    )
 
                 paths_in = paths[:, :-1, :]
                 interactions_in = interactions[:, :-1, :]
@@ -720,15 +898,12 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                 paths_out = paths[:, 1:, :]
                 interactions_out = interactions[:, 1:, :]
 
-                if hasattr(model, "cluster_mlp_head"):
-                    (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
-                     az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
-                     path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in,
-                                                                  cluster_emb=cluster_emb, cluster_pad_mask=cluster_pad_mask)
-                else:
-                    (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
-                     az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
-                     path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
+                (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                 az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                 path_length_pred, interaction_logits) = model(
+                    prompts, paths_in, interactions_in,
+                    cluster_center_std=cluster_center_std, cluster_pad_mask=cluster_pad_mask
+                )
                 
                 try:
                     if hasattr(model, "decoder") and hasattr(model.decoder, "layers"):
@@ -768,8 +943,7 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                     "val_loss": f"{total_loss.item():.4f}",
                     "inter": f"{loss_interaction.item():.4f}",  # NEW
                 })
-        print("Val delay_pred->",delay_pred[0])
-        print("Val actual->",paths_out[0, :, 0])
+        # print("Val delay_pred->",delay_p 
 
         
         # print("val attn->",attn[0, 1,])
@@ -865,7 +1039,7 @@ if config["USE_WANDB"]:
 # %%
 all_scenarios = ['city_47_chicago_3p5', 'city_23_beijing_3p5', 'city_91_xiangyang_3p5', 'city_17_seattle_3p5_s', 'city_12_fortworth_3p5', 'city_92_sãopaulo_3p5', 'city_35_san_francisco_3p5', 'city_10_florida_villa_7gp_1758095156175', 'city_19_oklahoma_3p5_s', 'city_74_chiyoda_3p5']
 
-for scenario in all_scenarios:
+for scenario in all_scenarios[9:]:
 # %%
     dataset = dm.load(scenario, )
     print(f"######### Training on Scenario {scenario}  #########")
@@ -874,7 +1048,7 @@ for scenario in all_scenarios:
         "PAD_VALUE": 0,
         "USE_WANDB": False,
         "LR": 2e-5,
-        "epochs": 100,
+        "epochs": 5,
         "interaction_weight": 0.01,
         "experiment": f"delay_only_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
         "hidden_dim": 512,
@@ -883,11 +1057,13 @@ for scenario in all_scenarios:
         "use_delay_kmeans": True,
         "n_clusters": 5,
         "max_path_len_clusters": 25,
+        # "cluster_features": ["delay", "power", "aoa_az", "aoa_el", "phase"],
+        "cluster_features": ["delay", "power"],
+
         "delay_only_loss": False,
         "TARGET_NOISE_PROB": 0.2,
         "TARGET_NOISE_PARAMS": None,
-        "use_cluster_mlp_head": False,
-        "pretrained_checkpoint": "checkpoints2/noise_enc_direct_city_47_chicago_3p5_interacaction_all_inter_str_dec_all_repeat_best_model_checkpoint.pth",
+        # "pretrained_checkpoint": "checkpoints2/noise_enc_direct_city_47_chicago_3p5_interacaction_all_inter_str_dec_all_repeat_best_model_checkpoint.pth",
     }
 
     train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power", pad_value=config["PAD_VALUE"], normalizers=None, apply_normalizers=[])
@@ -895,59 +1071,47 @@ for scenario in all_scenarios:
 
     n_clusters = config.get("n_clusters", 4)
     max_path_len_clusters = config.get("max_path_len_clusters", 26)
+    cluster_features = config.get("cluster_features", ["delay", "power", "aoa_az", "aoa_el", "phase"])
     cluster_centers = None
+    cluster_stds = None
     cluster_lookup_data = None
 
-    if config.get("use_cluster_mlp_head", False):
-        backbone = PathDecoder(
-            prompt_dim=6,
-            hidden_dim=config["hidden_dim"],
-            n_layers=config["n_layers"],
-            n_heads=config["n_heads"],
-            pad_value=config["PAD_VALUE"],
-        ).to(device)
-        ckpt_path = config.get("pretrained_checkpoint", "checkpoints2/noise_enc_direct_city_47_chicago_3p5_interacaction_all_inter_str_dec_all_repeat_best_model_checkpoint.pth")
-        if os.path.exists(ckpt_path):
-            ckpt = torch.load(ckpt_path, map_location=device)
-            backbone.load_state_dict(ckpt["model_state_dict"], strict=True)
-            print(f"Loaded backbone from {ckpt_path}")
-        model = PathDecoderClusterMLPHead(backbone, config["hidden_dim"], n_clusters=n_clusters, max_path_len_clusters=max_path_len_clusters).to(device)
-        if config.get("use_delay_kmeans", False):
-            if not hasattr(train_data, "mins"):
-                train_data.mins = np.array([0.0, 0.0, 0.0])
-                train_data.maxs = np.array([1.0, 1.0, 1.0])
-            if "tx_idx" not in train_data.dataset_filtered:
-                train_data.dataset_filtered["tx_idx"] = [0] * len(train_data.dataset_filtered["delay"])
-            cluster_centers = compute_delay_kmeans_cluster_centers(train_data, max_path_len=max_path_len_clusters, n_clusters=n_clusters)
-            train_rx_pos, train_tx_idx, train_step_means, train_valid_len = precompute_train_cluster_raw(
-                train_data, cluster_centers, max_path_len=max_path_len_clusters, device=device
-            )
-            cluster_lookup_data = (train_rx_pos, train_tx_idx, None, train_valid_len, train_step_means)
-            print("Precomputed train cluster raw for NN lookup by (x,y) (cluster_embed learned)")
-    else:
-        model = PathDecoder(
-            prompt_dim=6,
-            hidden_dim=config["hidden_dim"],
-            n_layers=config["n_layers"],
-            n_heads=config["n_heads"],
-            pad_value=config["PAD_VALUE"],
-        ).to(device)
-        if config.get("use_delay_kmeans", False):
-            if not hasattr(train_data, "mins"):
-                train_data.mins = np.array([0.0, 0.0, 0.0])
-                train_data.maxs = np.array([1.0, 1.0, 1.0])
-            if "tx_idx" not in train_data.dataset_filtered:
-                train_data.dataset_filtered["tx_idx"] = [0] * len(train_data.dataset_filtered["delay"])
-            cluster_centers = compute_delay_kmeans_cluster_centers(train_data, max_path_len=max_path_len_clusters, n_clusters=n_clusters)
-            cluster_centers_tensor = torch.tensor(cluster_centers, dtype=torch.float32)
-            cluster_embed_fn = nn.Linear(1, config["hidden_dim"]).to(device)
-            train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means = precompute_train_cluster_embeddings(
-                train_data, cluster_centers, cluster_embed_fn,
-                max_path_len=max_path_len_clusters, n_clusters=n_clusters,
-                hidden_dim=config["hidden_dim"], device=device
-            )
-            cluster_lookup_data = (train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means)
-            print("Precomputed train cluster embeddings for NN lookup by (x,y)")
+    # backbone = PathDecoder(
+    #     prompt_dim=6,
+    #     hidden_dim=config["hidden_dim"],
+    #     n_layers=config["n_layers"],
+    #     n_heads=config["n_heads"],
+    #     pad_value=config["PAD_VALUE"],
+    # ).to(device)
+    # model = PathDecoderClusterEncoderAdapter(
+    #     backbone=backbone,
+    #     hidden_dim=config["hidden_dim"],
+    #     cluster_feature_dim=2 * len(cluster_features),
+    #     prompt_dim=6,
+    # ).to(device)
+    model = PathDecoderClusterEncoderAttention(hidden_dim=config["hidden_dim"], cluster_feature_dim=2 * len(cluster_features), prompt_dim=6).to(device)
+
+    if config.get("use_delay_kmeans", False):
+        if not hasattr(train_data, "mins"):
+            train_data.mins = np.array([0.0, 0.0, 0.0])
+            train_data.maxs = np.array([1.0, 1.0, 1.0])
+        if "tx_idx" not in train_data.dataset_filtered:
+            train_data.dataset_filtered["tx_idx"] = [0] * len(train_data.dataset_filtered["delay"])
+        cluster_centers, cluster_stds = compute_feature_kmeans_cluster_stats(
+            train_data,
+            feature_keys=cluster_features,
+            max_path_len=max_path_len_clusters,
+            n_clusters=n_clusters,
+        )
+        train_rx_pos, train_tx_idx, train_cluster_center_std, train_valid_len = precompute_train_cluster_center_std_sequences(
+            train_data,
+            cluster_centers=cluster_centers,
+            cluster_stds=cluster_stds,
+            feature_keys=cluster_features,
+            max_path_len=max_path_len_clusters,
+        )
+        cluster_lookup_data = (train_rx_pos, train_tx_idx, train_cluster_center_std, train_valid_len)
+        print(f"Precomputed train cluster center+std for NN lookup by (x,y), features={cluster_features}")
     print("Total trainable parameters:", count_parameters(model))
     # print(f"train_tx_idx: {train_tx_idx.shape} {train_tx_idx[:6]}")
     # print(f"train_rx_pos: {train_rx_pos.shape} {train_rx_pos[:6]}")
@@ -1060,7 +1224,8 @@ for scenario in all_scenarios:
     print(f"✓ Results for {scenario} saved to {csv_log_file}")
     del dataset, train_loader, val_loader, model
 
-
+    gc.collect()
+    torch.cuda.empty_cache()
     # %%
     # show_example(model, val_loader, sample_index=24)
 
