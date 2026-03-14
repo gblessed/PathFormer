@@ -136,6 +136,61 @@ def compute_stop_metrics(path_count, targets, pad_value=0):
     return rmse 
 
 
+def compute_interaction_metrics_from_binary_predictions(interaction_preds, interaction_targets):
+    interaction_mask = (interaction_targets[:, :, 0] != -1)
+
+    if not interaction_mask.any():
+        return 0.0, 0.0
+
+    valid_preds = interaction_preds[interaction_mask].int().cpu().numpy()
+    valid_targets = interaction_targets[interaction_mask].int().cpu().numpy()
+
+    accuracy = accuracy_score(valid_targets.reshape(-1), valid_preds.reshape(-1))
+    f1 = f1_score(valid_targets.reshape(-1), valid_preds.reshape(-1), zero_division=0)
+    return accuracy, f1
+
+
+def generate_paths_no_env_batch(model, prompts, max_steps=25, stop_threshold=0.5, cluster_emb=None, cluster_pad_mask=None):
+    model.eval()
+    device = next(model.parameters()).device
+    prompts = prompts.to(device)
+    batch_size = prompts.size(0)
+    cur = torch.zeros(batch_size, 1, 5, device=device)
+    inter_str = -1 * torch.ones(batch_size, 1, 4, device=device)
+    outputs = []
+    outputs_inter_str = []
+
+    for _ in range(max_steps):
+        d, p, s, c, ph, az_s, az_c, az, el_s, el_c, el, pathcounts, inter_str_logits = model(
+            prompts,
+            cur,
+            inter_str,
+            cluster_emb=cluster_emb,
+            cluster_pad_mask=cluster_pad_mask,
+        )
+
+        d_t = d[:, -1]
+        p_t = p[:, -1]
+        ph_t = ph[:, -1]
+        az_t = az[:, -1]
+        el_t = el[:, -1]
+        inter_logits_t = inter_str_logits[:, -1]
+        inter_pred_t = (torch.sigmoid(inter_logits_t) > 0.5).float()
+
+        outputs.append(torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1))
+        outputs_inter_str.append(inter_pred_t)
+
+        next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1).unsqueeze(1)
+        cur = torch.cat([cur, next_path], dim=1)
+        inter_str = torch.cat([inter_str, inter_pred_t.unsqueeze(1)], dim=1)
+
+    return (
+        torch.stack(outputs, dim=1).detach().cpu(),
+        pathcounts,
+        torch.stack(outputs_inter_str, dim=1).detach().cpu(),
+    )
+
+
 
 def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_value=0, data_stats=None,
                    cluster_lookup_data=None):
@@ -161,6 +216,8 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
     el_errors = []
     az_maes = []
     el_maes = []
+    interaction_targets_all = []
+    interaction_preds_all = []
     with torch.no_grad():
         outer_bar = tqdm(val_loader, desc="Evaluating (batches)", leave=True)
 
@@ -168,44 +225,58 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
             prompts = prompts.cuda()
             paths = paths.cuda()
             path_lengths = path_lengths.cuda()
+            interactions = interactions.cuda()
             path_padding_mask = path_padding_mask.cuda()
             # For cluster lookup use tx_idx=0 per sample when not provided (single-Tx)
             batch_tx_idx = torch.zeros(prompts.size(0), dtype=torch.long, device=prompts.device)
-         
-            # Inner tqdm to show per-sample progress
-            inner_bar = tqdm(range(prompts.size(0)), 
-                             desc="   Processing samples", 
-                             leave=False)
+            cluster_emb, cluster_pad_mask = None, None
+            if cluster_lookup_data is not None:
+                train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means = cluster_lookup_data
+                if hasattr(model, "cluster_mlp_head"):
+                    cluster_emb, cluster_pad_mask = lookup_cluster_raw_by_position(
+                        prompts, batch_tx_idx, train_rx_pos, train_tx_idx, train_step_means, train_valid_len, device
+                    )
+                else:
+                    cluster_emb, cluster_pad_mask = lookup_cluster_embs_by_position(
+                        prompts, batch_tx_idx, train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, device
+                    )
 
+            generated, path_lengths_pred, inter_str_pred = generate_paths_no_env_batch(
+                model,
+                prompts,
+                max_steps=max_generate,
+                cluster_emb=cluster_emb,
+                cluster_pad_mask=cluster_pad_mask,
+            )
 
-            for b in inner_bar:
-                cluster_emb_b, cluster_pad_b = None, None
-                if cluster_lookup_data is not None:
-                    prom_b = prompts[b:b+1]
-                    tx_b = batch_tx_idx[b:b+1]
-                    train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, train_step_means = cluster_lookup_data
-                    if hasattr(model, "cluster_mlp_head"):
-                        cluster_emb_b, cluster_pad_b = lookup_cluster_raw_by_position(
-                            prom_b, tx_b, train_rx_pos, train_tx_idx, train_step_means, train_valid_len, device
-                        )
-                    else:
-                        cluster_emb_b, cluster_pad_b = lookup_cluster_embs_by_position(
-                            prom_b, tx_b, train_rx_pos, train_tx_idx, train_cluster_embs, train_valid_len, device
-                        )
-                generated, path_lengths_pred, inter_str_pred = generate_paths_no_env(
-                    model, prompts[b], max_steps=max_generate,
-                    cluster_emb=cluster_emb_b, cluster_pad_mask=cluster_pad_b
-                )
-                # print("generated",generated[:])
+            generated = generated.cuda()
+            inter_str_pred = inter_str_pred.cpu()
+            if path_lengths_pred.dim() > 1:
+                path_lengths_pred = path_lengths_pred.squeeze(-1)
 
-                generated = generated.cuda()
+            batch_delay_rmses = []
+            batch_power_rmses = []
+            batch_phase_rmses = []
+            batch_length_rmses = []
+            batch_az_rmses = []
+            batch_el_rmses = []
+
+            for b in range(prompts.size(0)):
                 # Use path length for valid positions (mask-based; pad value is 0)
                 n_valid = int(round(path_lengths[b].item() * 25))
                 gt = paths[b][1:1 + n_valid, :5]
+                gt_interactions = interactions[b][1:1 + n_valid, :]
 
-                T = min(len(gt), len(generated))
-                pred = generated[:T]
+                T = min(len(gt), generated.size(1))
+                pred = generated[b, :T]
                 gt = gt[:T]
+                pred_interactions = inter_str_pred[b, :T]
+                gt_interactions = gt_interactions[:T].detach().cpu()
+
+                valid_interaction_mask = (gt_interactions[:, 0] != -1)
+                if valid_interaction_mask.any():
+                    interaction_targets_all.append(gt_interactions[valid_interaction_mask].numpy().astype(np.int32))
+                    interaction_preds_all.append(pred_interactions[valid_interaction_mask].numpy().astype(np.int32))
 
                 delay_pred = pred[:,0]
                 delay = gt[:,0]
@@ -272,7 +343,7 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
                 el_mae = torch.mean(torch.abs(el_circular_dist)).item()
 
                 # Path length RMSE (path_lengths in [0,1]; pathcounts raw; use same scale)
-                pl_pred = path_lengths_pred.squeeze()
+                pl_pred = path_lengths_pred[b].squeeze()
                 pl_gt = path_lengths[b].squeeze()
                 length_rmse = (torch.mean((pl_pred - pl_gt)**2)).sqrt().item()
                 length_mae = (torch.mean(torch.abs(pl_pred - pl_gt))).item()
@@ -293,21 +364,12 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
                 path_length_maes.append(length_mae)
                 az_maes.append(az_mae)
                 el_maes.append(el_mae)
-                # Show live metric values in tqdm
-                inner_bar.set_postfix({
-                    "delay_rmse": f"{delay_rmse:.3f}",
-                    "power_rmse": f"{power_rmse:.3f}",
-                    "phase_rmse": f"{phase_rmse:.3f}",
-                    "az_rmse": f"{az_rmse:.3f}",
-                    "el_rmse": f"{el_rmse:.3f}",
-                    "length_rmse": f"{length_rmse:.3f}",
-                    "delay_mae": f"{delay_mae:.3f}",
-                    "power_mae": f"{power_mae:.3f}",
-                    "phase_mae": f"{phase_mae:.3f}",
-                    "az_mae": f"{az_mae:.3f}",
-                    "el_mae": f"{el_mae:.3f}",
-                    "length_mae": f"{length_mae:.3f}"
-                })
+                batch_delay_rmses.append(delay_rmse)
+                batch_power_rmses.append(power_rmse)
+                batch_phase_rmses.append(phase_rmse)
+                batch_length_rmses.append(length_rmse)
+                batch_az_rmses.append(az_rmse)
+                batch_el_rmses.append(el_rmse)
 
                 # wandb logging
                 if log_to_wandb:
@@ -325,18 +387,16 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
                         "test_el_mae": el_mae,
                         "test_stop_length_mae": length_mae,
                     })
-            print("Batch evaluation complete.")
-            
-            print("\n================= Up toBATCH EVALUATION RESULTS =================")
-            print(f"Avg Delay RMSE           : {np.mean(delay_errors):.4f} µs")
-            print(f"Avg Power RMSE           : {np.mean(power_errors):.4f} dB")
-            print(f"Avg Phase RMSE           : {np.mean(phase_errors):.4f} degrees")
-            print(f"Avg Path Length RMSE     : {np.mean(path_length_rmses):.4f}")
-            print(f"Avg Delay MAE           : {np.mean(delay_maes):.4f} µs")
-            print(f"Avg Power MAE           : {np.mean(power_maes):.4f} dB")
-            print(f"Avg Phase MAE           : {np.mean(phase_maes):.4f} degrees")
-            print(f"Avg Path Length MAE     : {np.mean(path_length_maes):.4f}")
-            print("============================================================")
+
+            if batch_delay_rmses:
+                outer_bar.set_postfix({
+                    "delay_rmse": f"{np.mean(batch_delay_rmses):.3f}",
+                    "power_rmse": f"{np.mean(batch_power_rmses):.3f}",
+                    "phase_rmse": f"{np.mean(batch_phase_rmses):.3f}",
+                    "az_rmse": f"{np.mean(batch_az_rmses):.3f}",
+                    "el_rmse": f"{np.mean(batch_el_rmses):.3f}",
+                    "length_rmse": f"{np.mean(batch_length_rmses):.3f}",
+                })
             
 
     # ---- Final Aggregated Results ----
@@ -353,6 +413,21 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
     avg_az_mae = np.mean(az_maes)
     avg_el_mae = np.mean(el_maes)
     avg_path_length_mae= np.mean(path_length_maes)
+    if interaction_targets_all:
+        interaction_targets_np = np.concatenate(interaction_targets_all, axis=0)
+        interaction_preds_np = np.concatenate(interaction_preds_all, axis=0)
+        avg_interaction_accuracy = accuracy_score(
+            interaction_targets_np.reshape(-1),
+            interaction_preds_np.reshape(-1),
+        )
+        avg_interaction_f1 = f1_score(
+            interaction_targets_np.reshape(-1),
+            interaction_preds_np.reshape(-1),
+            zero_division=0,
+        )
+    else:
+        avg_interaction_accuracy = 0.0
+        avg_interaction_f1 = 0.0
 
     print("\n=================  Final EVALUATION RESULTS =================")
     print(f"Delay RMSE           : {avg_delay:.4f} µs")
@@ -361,6 +436,8 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
     print(f"AoA Azimuth RMSE     : {avg_az:.4f} degrees")
     print(f"AoA Elevation RMSE   : {avg_el:.4f} degrees")
     print(f"Path Length RMSE     : {avg_path_length_rmse:.4f}")
+    print(f"Interaction Accuracy : {avg_interaction_accuracy:.4f}")
+    print(f"Interaction F1       : {avg_interaction_f1:.4f}")
         
     print(f"Delay MAE           : {avg_delay_mae:.4f} µs")
     print(f"Power MAE           : {avg_power_mae:.4f} dB")
@@ -375,13 +452,30 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_v
         wandb.run.summary["test_power_rmse"] = avg_power
         wandb.run.summary["test_phase_circ_err"] = avg_phase
         wandb.run.summary["test_path_length_rmse"] = avg_path_length_rmse
+        wandb.run.summary["test_interaction_accuracy"] = avg_interaction_accuracy
+        wandb.run.summary["test_interaction_f1"] = avg_interaction_f1
         
         wandb.run.summary["test_delay_mae"] = avg_delay_mae
         wandb.run.summary["test_power_mae"] = avg_power_mae
         wandb.run.summary["test_phase_circ_err_mae"] = avg_phase_mae
         wandb.run.summary["test_path_length_mae"] = avg_path_length_mae
 
-    return avg_delay, avg_power, avg_phase, avg_az, avg_el, avg_path_length_rmse, avg_delay_mae, avg_power_mae, avg_phase_mae,avg_az_mae, avg_el_mae, avg_path_length_mae 
+    return (
+        avg_delay,
+        avg_power,
+        avg_phase,
+        avg_az,
+        avg_el,
+        avg_path_length_rmse,
+        avg_interaction_accuracy,
+        avg_interaction_f1,
+        avg_delay_mae,
+        avg_power_mae,
+        avg_phase_mae,
+        avg_az_mae,
+        avg_el_mae,
+        avg_path_length_mae,
+    )
 
 
 
@@ -666,8 +760,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
             attn = getattr(model.decoder.layers[-1], "cross_attn_weights", None) if hasattr(model, "decoder") else None
         except Exception:
             attn = None
-        print("Train delay_pred->",delay_pred[0])
-        print("Train actual->",paths_out[0, :, 0])
+        # print("Train delay_pred->",delay_pred[0])
+        # print("Train actual->",paths_out[0, :, 0])
         avg_train_loss = np.mean(train_losses)
         avg_train_delay = np.mean(train_loss_delay)
         avg_train_power = np.mean(train_loss_power)
@@ -768,8 +862,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                     "val_loss": f"{total_loss.item():.4f}",
                     "inter": f"{loss_interaction.item():.4f}",  # NEW
                 })
-        print("Val delay_pred->",delay_pred[0])
-        print("Val actual->",paths_out[0, :, 0])
+        # print("Val delay_pred->",delay_pred[0])
+        # print("Val actual->",paths_out[0, :, 0])
 
         
         # print("val attn->",attn[0, 1,])
@@ -1031,7 +1125,7 @@ for scenario in all_scenarios:
     results = evaluate_model(model, val_loader, pad_value=config["PAD_VALUE"], data_stats=None,
                              cluster_lookup_data=cluster_lookup_data)
     # print(results)
-    avg_delay, avg_power, avg_phase, avg_az, avg_el, avg_path_length_rmse, avg_delay_mae, avg_power_mae, avg_phase_mae, avg_az_mae, avg_el_mae, avg_path_length_mae  = results
+    avg_delay, avg_power, avg_phase, avg_az, avg_el, avg_path_length_rmse, avg_interaction_accuracy, avg_interaction_f1, avg_delay_mae, avg_power_mae, avg_phase_mae, avg_az_mae, avg_el_mae, avg_path_length_mae  = results
     # (avg_delay, avg_power, avg_phase, avg_path_length_rmse, 
     #  avg_delay_mae, avg_power_mae, avg_phase_mae, avg_path_length_mae) = results
     scenario_row = {
@@ -1043,6 +1137,8 @@ for scenario in all_scenarios:
             "el_rmse": avg_el,
             "phase_rmse": avg_phase,
             "path_length_rmse": avg_path_length_rmse,
+            "interaction_accuracy": avg_interaction_accuracy,
+            "interaction_f1": avg_interaction_f1,
             "delay_mae": avg_delay_mae,
             "power_mae": avg_power_mae,
             "phase_mae": avg_phase_mae,
@@ -1089,6 +1185,4 @@ results = evaluate_model(model, val_loader, pad_value=config["PAD_VALUE"], data_
 
 
 # %%
-
-
 

@@ -1,0 +1,77 @@
+% -----------------------------------------------------------------------------
+% Methodology: Reinforcement Learning After Supervised Fine-Tuning
+% for Multipath Channel Prediction
+% -----------------------------------------------------------------------------
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{hyperref}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{booktabs}
+
+\title{Methodology: Improving SFT with Reinforcement Learning\\for Path Prediction}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Problem Setup}
+
+We consider an autoregressive path decoder that, given a prompt $\bm{x}_0$, generates a sequence of path parameters $\hat{\bm{y}}_{1:T} = (\hat{\bm{y}}_1, \ldots, \hat{\bm{y}}_T)$, where each $\hat{\bm{y}}_t \in \mathbb{R}^5$ comprises delay, power, phase, azimuth, and elevation. The model is first trained with supervised fine-tuning (SFT) by minimizing a masked mean-squared error (MSE) over the next-token predictions. We aim to \emph{improve evaluation performance} (delay, power, phase, AoA, and path-length metrics) by a subsequent reinforcement learning (RL) phase, without modifying the SFT training pipeline.
+
+\section{Design Principles}
+
+To ensure that RL actually improves the metrics reported at evaluation time, we adopt the following principles:
+
+\begin{enumerate}
+  \item \textbf{Reward--evaluation alignment:} The reward function is the negative of a weighted sum of the same errors used in the evaluation protocol (RMSE on delay, power, phase, azimuth, elevation, and path length). Maximizing reward is then equivalent to improving the evaluation metrics.
+  \item \textbf{Stability via SFT regularization:} A fraction of the SFT loss is retained during RL so the policy does not drift far from the SFT solution, avoiding collapse and preserving calibration.
+  \item \textbf{Checkpoint selection by evaluation:} The best checkpoint is chosen by running the full evaluation pipeline (batch autoregressive generation and metric aggregation) on a validation set, rather than by training reward or training loss. This directly optimizes for the quantity we care about.
+\end{enumerate}
+
+\section{Reward Design}
+
+Let $\mathcal{D} = \{ (\bm{x}_0^{(i)}, \bm{y}_{1:T_i}^{(i)}, n_i) \}$ denote a batch of prompts, ground-truth path sequences, and path-length labels. For each sample $i$, the model (under teacher forcing) produces predictions $\hat{\bm{y}}_{1:T}^{(i)}$ and a path-length prediction $\hat{n}_i$. We define a composite error
+\begin{equation}
+  e_i = \sum_{k \in \mathcal{K}} w_k \, \phi_k\bigl( \hat{\bm{y}}^{(i)}, \bm{y}^{(i)}, \hat{n}_i, n_i \bigr),
+\end{equation}
+where $\mathcal{K} = \{\text{delay}, \text{power}, \text{phase}, \text{az}, \text{el}, \text{path\_len}\}$, $w_k \geq 0$ are fixed weights, and $\phi_k$ are the same error terms used at evaluation (e.g., RMSE over valid steps for delay/power/phase, circular error for angles, absolute error for path length). The \textbf{reward} for sample $i$ is
+\begin{equation}
+  r_i = -e_i.
+\end{equation}
+Thus, higher reward corresponds to lower evaluation error.
+
+\section{Policy Gradient and Loss}
+
+The SFT model defines a deterministic mapping (no explicit stochastic policy). We treat the teacher-forced forward pass as yielding a per-sample “action” and use a \textbf{reward-weighted regression} objective that reinforces high-reward trajectories.
+
+Let $m_i$ denote the per-sample MSE (over valid steps) between the model predictions and the ground-truth targets for sample $i$, using the same masking and loss terms as in SFT. We introduce a baseline $b$ (e.g., the batch mean reward $\bar{r} = \frac{1}{B}\sum_i r_i$) for variance reduction. The RL component of the loss is
+\begin{equation}
+  \mathcal{L}_{\text{RL}} = \frac{1}{B} \sum_{i=1}^{B} \bigl( b - r_i \bigr) \, m_i.
+\end{equation}
+Minimizing $\mathcal{L}_{\text{RL}}$ increases the weight on samples with $r_i > b$ (better-than-average reward) and decreases the weight on samples with $r_i < b$, effectively performing a REINFORCE-style update that pushes the policy toward high-reward behavior while using the MSE as a surrogate for the log-probability of the predicted trajectory.
+
+The \textbf{total loss} combines the RL term with the standard SFT (masked) loss:
+\begin{equation}
+  \mathcal{L} = (1 - \lambda)\,\mathcal{L}_{\text{RL}} + \lambda\,\mathcal{L}_{\text{SFT}},
+\end{equation}
+where $\lambda \in (0,1)$ is the SFT coefficient (e.g., $\lambda = 0.2$). This keeps the model close to the SFT solution and stabilizes training.
+
+\section{Evaluation and Checkpoint Selection}
+
+Every $K$ epochs (e.g., $K=2$), we run the full \textbf{batch evaluation} pipeline: autoregressive generation with $\texttt{generate\_paths\_no\_env\_batch}$, then computation of the same metrics (delay, power, phase, azimuth, elevation, path-length RMSE/MAE, and optionally channel NMSE) as in the existing evaluation code. We form the same composite metric $E = \sum_k w_k \bar{\phi}_k$ over the validation set and \textbf{save a checkpoint only when $E$ improves}. The final model used for reporting is the one with the best validation composite metric, ensuring that RL improves \emph{evaluation} performance rather than only training reward.
+
+\section{Summary}
+
+\begin{itemize}
+  \item \textbf{Reward:} $r_i = -\sum_k w_k \phi_k^{(i)}$ (negative composite evaluation error).
+  \item \textbf{RL loss:} $\mathcal{L}_{\text{RL}} = \frac{1}{B}\sum_i (b - r_i)\, m_i$ with baseline $b$.
+  \item \textbf{Total loss:} $\mathcal{L} = (1-\lambda)\mathcal{L}_{\text{RL}} + \lambda\mathcal{L}_{\text{SFT}}$.
+  \item \textbf{Selection:} Best checkpoint = minimum validation composite $E$ over RL training.
+\end{itemize}
+
+This methodology keeps the SFT pipeline unchanged, reuses the existing batch evaluation implementation, and ties improvement directly to the metrics used at evaluation time.
+
+\end{document}

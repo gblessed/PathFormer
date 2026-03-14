@@ -1,0 +1,2 @@
+scenario,path_checkpoint,embed_pool,ch_nmse_log,avg_ch_score,avg_ch_nmse_dB
+city_47_chicago_3p5,cc,mean_valid,-1.2726879540941,0.63634397704705,-12.726879540941002

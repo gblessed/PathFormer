@@ -131,6 +131,22 @@ def compute_stop_metrics(path_count, targets, pad_value=0):
     return rmse 
 
 
+def compute_interaction_metrics_from_logits(interaction_logits, interaction_targets):
+    interaction_mask = (interaction_targets[:, :, 0] != -1)
+
+    if not interaction_mask.any():
+        return 0.0, 0.0
+
+    valid_logits = interaction_logits[interaction_mask]
+    valid_targets = interaction_targets[interaction_mask]
+    valid_preds = (torch.sigmoid(valid_logits) > 0.5).int().detach().cpu().numpy()
+    valid_targets = valid_targets.int().detach().cpu().numpy()
+
+    accuracy = accuracy_score(valid_targets.reshape(-1), valid_preds.reshape(-1))
+    f1 = f1_score(valid_targets.reshape(-1), valid_preds.reshape(-1), zero_division=0)
+    return accuracy, f1
+
+
 
 def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
     model.eval()
@@ -151,6 +167,8 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
     el_errors = []
     az_maes = []
     el_maes = []
+    interaction_targets_all = []
+    interaction_preds_all = []
     with torch.no_grad():
         outer_bar = tqdm(val_loader, desc="Evaluating (batches)", leave=True)
 
@@ -158,28 +176,45 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
             prompts = prompts.cuda()
             paths = paths.cuda()
             path_lengths = path_lengths.cuda()
-         
-            # Inner tqdm to show per-sample progress
-            inner_bar = tqdm(range(prompts.size(0)), 
-                             desc="   Processing samples", 
-                             leave=False)
+            interactions = interactions.cuda()
+            batch_size = prompts.size(0)
+            generated, path_lengths_pred, inter_str_pred = generate_paths_no_env_batch(
+                model,
+                prompts,
+                max_steps=max_generate,
+            )
+            generated = generated.cuda()
+            inter_str_pred = inter_str_pred.cpu()
 
+            if path_lengths_pred.dim() > 1:
+                path_lengths_pred = path_lengths_pred.squeeze(-1)
 
-            for b in inner_bar:
-                generated, path_lengths_pred, inter_str_pred = generate_paths_no_env(model, prompts[b], max_steps=max_generate)
+            batch_delay_rmses = []
+            batch_power_rmses = []
+            batch_phase_rmses = []
+            batch_length_rmses = []
+            batch_az_rmses = []
+            batch_el_rmses = []
 
-                generated = generated.cuda()
-                # ground truth: delay, power, phase, aoa_az, aoa_el
-                # gt = paths[b][1:, :5]
-
-                # Mask padded values
-                # valid_mask = (gt[:,0] != train_data.pad_value)
+            for b in range(batch_size):
                 n_valid = int(round(path_lengths[b].item() * 25))
                 gt = paths[b][1:1 + n_valid, :5]
+                gt_interactions = interactions[b][1:1 + n_valid, :]
 
-                T = min(len(gt), len(generated))
-                pred = generated[:T]
+                T = min(len(gt), generated.size(1))
+                pred = generated[b, :T]
                 gt = gt[:T]
+                pred_interactions = inter_str_pred[b, :T]
+                gt_interactions = gt_interactions[:T].detach().cpu()
+
+                valid_interaction_mask = (gt_interactions[:, 0] != -1)
+                if valid_interaction_mask.any():
+                    interaction_targets_all.append(
+                        gt_interactions[valid_interaction_mask].numpy().astype(np.int32)
+                    )
+                    interaction_preds_all.append(
+                        pred_interactions[valid_interaction_mask].detach().cpu().numpy().astype(np.int32)
+                    )
 
    
                 # delay_pred = (pred[:,0]  * data_stats["delay"]["std"] ) + data_stats["delay"]["mean"]
@@ -243,9 +278,9 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
                 el_mae = torch.mean(torch.abs(el_circular_dist)).item()
 
                 # Path length RMSE
-                # print(path_lengths_pred, path_lengths[b],)
-                length_rmse = (torch.mean( (path_lengths_pred - path_lengths[b])**2)).sqrt().item()
-                length_mae = (torch.mean(torch.abs(path_lengths_pred - path_lengths[b]))).item()
+                path_lengths_pred_b = path_lengths_pred[b]
+                length_rmse = (torch.mean((path_lengths_pred_b - path_lengths[b])**2)).sqrt().item()
+                length_mae = (torch.mean(torch.abs(path_lengths_pred_b - path_lengths[b]))).item()
 
 
                 # Save metrics
@@ -263,21 +298,12 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
                 path_length_maes.append(length_mae)
                 az_maes.append(az_mae)
                 el_maes.append(el_mae)
-                # Show live metric values in tqdm
-                inner_bar.set_postfix({
-                    "delay_rmse": f"{delay_rmse:.3f}",
-                    "power_rmse": f"{power_rmse:.3f}",
-                    "phase_rmse": f"{phase_rmse:.3f}",
-                    "az_rmse": f"{az_rmse:.3f}",
-                    "el_rmse": f"{el_rmse:.3f}",
-                    "length_rmse": f"{length_rmse:.3f}",
-                    "delay_mae": f"{delay_mae:.3f}",
-                    "power_mae": f"{power_mae:.3f}",
-                    "phase_mae": f"{phase_mae:.3f}",
-                    "az_mae": f"{az_mae:.3f}",
-                    "el_mae": f"{el_mae:.3f}",
-                    "length_mae": f"{length_mae:.3f}"
-                })
+                batch_delay_rmses.append(delay_rmse)
+                batch_power_rmses.append(power_rmse)
+                batch_phase_rmses.append(phase_rmse)
+                batch_length_rmses.append(length_rmse)
+                batch_az_rmses.append(az_rmse)
+                batch_el_rmses.append(el_rmse)
 
                 # wandb logging
                 if log_to_wandb:
@@ -295,6 +321,16 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
                         "test_el_mae": el_mae,
                         "test_stop_length_mae": length_mae,
                     })
+
+            if batch_delay_rmses:
+                outer_bar.set_postfix({
+                    "delay_rmse": f"{np.mean(batch_delay_rmses):.3f}",
+                    "power_rmse": f"{np.mean(batch_power_rmses):.3f}",
+                    "phase_rmse": f"{np.mean(batch_phase_rmses):.3f}",
+                    "az_rmse": f"{np.mean(batch_az_rmses):.3f}",
+                    "el_rmse": f"{np.mean(batch_el_rmses):.3f}",
+                    "length_rmse": f"{np.mean(batch_length_rmses):.3f}",
+                })
             # print("Batch evaluation complete.")
             
             # print("\n================= Up toBATCH EVALUATION RESULTS =================")
@@ -323,6 +359,21 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
     avg_az_mae = np.mean(az_maes)
     avg_el_mae = np.mean(el_maes)
     avg_path_length_mae= np.mean(path_length_maes)
+    if interaction_targets_all:
+        interaction_targets_np = np.concatenate(interaction_targets_all, axis=0)
+        interaction_preds_np = np.concatenate(interaction_preds_all, axis=0)
+        avg_interaction_accuracy = accuracy_score(
+            interaction_targets_np.reshape(-1),
+            interaction_preds_np.reshape(-1),
+        )
+        avg_interaction_f1 = f1_score(
+            interaction_targets_np.reshape(-1),
+            interaction_preds_np.reshape(-1),
+            zero_division=0,
+        )
+    else:
+        avg_interaction_accuracy = 0.0
+        avg_interaction_f1 = 0.0
 
     print("\n=================  Final EVALUATION RESULTS =================")
     print(f"Delay RMSE           : {avg_delay:.4f} µs")
@@ -331,6 +382,8 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
     print(f"AoA Azimuth RMSE     : {avg_az:.4f} degrees")
     print(f"AoA Elevation RMSE   : {avg_el:.4f} degrees")
     print(f"Path Length RMSE     : {avg_path_length_rmse:.4f}")
+    print(f"Interaction Accuracy : {avg_interaction_accuracy:.4f}")
+    print(f"Interaction F1       : {avg_interaction_f1:.4f}")
         
     print(f"Delay MAE           : {avg_delay_mae:.4f} µs")
     print(f"Power MAE           : {avg_power_mae:.4f} dB")
@@ -345,13 +398,30 @@ def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
         wandb.run.summary["test_power_rmse"] = avg_power
         wandb.run.summary["test_phase_circ_err"] = avg_phase
         wandb.run.summary["test_path_length_rmse"] = avg_path_length_rmse
+        wandb.run.summary["test_interaction_accuracy"] = avg_interaction_accuracy
+        wandb.run.summary["test_interaction_f1"] = avg_interaction_f1
         
         wandb.run.summary["test_delay_mae"] = avg_delay_mae
         wandb.run.summary["test_power_mae"] = avg_power_mae
         wandb.run.summary["test_phase_circ_err_mae"] = avg_phase_mae
         wandb.run.summary["test_path_length_mae"] = avg_path_length_mae
 
-    return avg_delay, avg_power, avg_phase, avg_az, avg_el, avg_path_length_rmse, avg_delay_mae, avg_power_mae, avg_phase_mae,avg_az_mae, avg_el_mae, avg_path_length_mae 
+    return (
+        avg_delay,
+        avg_power,
+        avg_phase,
+        avg_az,
+        avg_el,
+        avg_path_length_rmse,
+        avg_interaction_accuracy,
+        avg_interaction_f1,
+        avg_delay_mae,
+        avg_power_mae,
+        avg_phase_mae,
+        avg_az_mae,
+        avg_el_mae,
+        avg_path_length_mae,
+    )
 
 
 
@@ -443,6 +513,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
         train_loss_phase = []
         train_loss_path_length = []
         train_loss_interaction = []  # NEW
+        train_interaction_accuracies = []
+        train_interaction_f1s = []
         train_path_length_rmse = []
         train_loss_az = []
         train_loss_el = []
@@ -485,6 +557,10 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
             
             path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1), 
                                                     path_lengths)
+            interaction_accuracy, interaction_f1 = compute_interaction_metrics_from_logits(
+                interaction_logits.detach(),
+                interactions_out,
+            )
             ch_nmse = 0
             if epoch >= 0:
                 pass
@@ -519,6 +595,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
             train_loss_az.append(loss_az.item())
             train_loss_el.append(loss_el.item())
             train_loss_interaction.append(loss_interaction.item())  # NEW
+            train_interaction_accuracies.append(interaction_accuracy)
+            train_interaction_f1s.append(interaction_f1)
             train_path_length_rmse.append(path_length_rmse)
             current_lr = optimizer.param_groups[0]["lr"]
             pbar.set_postfix({
@@ -530,6 +608,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                 "az": f"{loss_az.item():.4f}",
                 "el": f"{loss_el.item():.4f}",
                 "inter": f"{loss_interaction.item():.4f}",  # NEW
+                "i_acc": f"{interaction_accuracy:.4f}",
+                "i_f1": f"{interaction_f1:.4f}",
                 "path_rmse": f"{path_length_rmse:.4f}",
                 "ch_nmse":f"{ch_nmse:.4f}",
                 "lr": f"{current_lr:.2e}"
@@ -544,6 +624,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
         avg_train_el = np.mean(train_loss_el)
         avg_train_path_length = np.mean(train_loss_path_length)
         avg_train_interaction = np.mean(train_loss_interaction)  # NEW
+        avg_train_interaction_accuracy = np.mean(train_interaction_accuracies)
+        avg_train_interaction_f1 = np.mean(train_interaction_f1s)
         avg_train_path_length_rmse = np.mean(train_path_length_rmse)
 
         # -------------------- VALIDATION --------------------
@@ -554,6 +636,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
         val_loss_phase = []
         val_loss_path_length = []
         val_loss_interaction = []  # NEW
+        val_interaction_accuracies = []
+        val_interaction_f1s = []
         val_path_length_rmse = []
         val_loss_az = []
         val_loss_el = []
@@ -598,6 +682,10 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
 
                 path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1), 
                                                        path_lengths)
+                interaction_accuracy, interaction_f1 = compute_interaction_metrics_from_logits(
+                    interaction_logits,
+                    interactions_out,
+                )
 
                 val_losses.append(total_loss.item())
                 val_loss_delay.append(loss_delay.item())
@@ -607,11 +695,15 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                 val_loss_el.append(loss_el.item())
                 val_loss_path_length.append(loss_path_length.item())
                 val_loss_interaction.append(loss_interaction.item())  # NEW
+                val_interaction_accuracies.append(interaction_accuracy)
+                val_interaction_f1s.append(interaction_f1)
                 val_path_length_rmse.append(path_length_rmse)
 
                 pbar.set_postfix({
                     "val_loss": f"{total_loss.item():.4f}",
                     "inter": f"{loss_interaction.item():.4f}",  # NEW
+                    "i_acc": f"{interaction_accuracy:.4f}",
+                    "i_f1": f"{interaction_f1:.4f}",
                 })
 
         avg_val_loss = np.mean(val_losses)
@@ -622,6 +714,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
         avg_val_el = np.mean(val_loss_el)
         avg_val_path_length = np.mean(val_loss_path_length)
         avg_val_interaction = np.mean(val_loss_interaction)  # NEW
+        avg_val_interaction_accuracy = np.mean(val_interaction_accuracies)
+        avg_val_interaction_f1 = np.mean(val_interaction_f1s)
         avg_val_path_length_rmse = np.mean(val_path_length_rmse)
 
         # scheduler.step(avg_val_loss)
@@ -650,6 +744,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                 "train_loss_el": avg_train_el,
                 "train_loss_path_length": avg_train_path_length,
                 "train_loss_interaction": avg_train_interaction,  # NEW
+                "train_interaction_accuracy": avg_train_interaction_accuracy,
+                "train_interaction_f1": avg_train_interaction_f1,
                 "train_path_length_rmse": avg_train_path_length_rmse,
 
                 "val_loss": avg_val_loss,
@@ -660,6 +756,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                 "val_loss_el": avg_val_el,
                 "val_loss_path_length": avg_val_path_length,
                 "val_loss_interaction": avg_val_interaction,  # NEW
+                "val_interaction_accuracy": avg_val_interaction_accuracy,
+                "val_interaction_f1": avg_val_interaction_f1,
                 "val_path_length_rmse": avg_val_path_length_rmse,
                 "epoch": epoch,
                 "lr": current_lr,
@@ -674,6 +772,8 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
         print(f"    El: {avg_train_el:.4f} (val: {avg_val_el:.4f})")
 
         print(f"    Interaction: {avg_train_interaction:.4f} (val: {avg_val_interaction:.4f})")  # NEW
+        print(f"    Interaction Acc: {avg_train_interaction_accuracy:.4f} (val: {avg_val_interaction_accuracy:.4f})")
+        print(f"    Interaction F1: {avg_train_interaction_f1:.4f} (val: {avg_val_interaction_f1:.4f})")
         print(f"    PathLength: {avg_train_path_length:.4f} (val: {avg_val_path_length:.4f})")  # NEW
 
         print(f"  LR: {current_lr:.3e}")
@@ -762,7 +862,7 @@ for scenario in all_scenarios[:1]:
         )
 
     # Train
-    train_with_interactions(model, train_loader, val_loader, config, train_data)
+    # train_with_interactions(model, train_loader, val_loader, config, train_data)
     
     # %% [markdown]
     # 
@@ -805,7 +905,7 @@ for scenario in all_scenarios[:1]:
     # %%
     results = evaluate_model(model, val_loader)
     # print(results)
-    avg_delay, avg_power, avg_phase, avg_az, avg_el, avg_path_length_rmse, avg_delay_mae, avg_power_mae, avg_phase_mae, avg_az_mae, avg_el_mae, avg_path_length_mae  = results
+    avg_delay, avg_power, avg_phase, avg_az, avg_el, avg_path_length_rmse, avg_interaction_accuracy, avg_interaction_f1, avg_delay_mae, avg_power_mae, avg_phase_mae, avg_az_mae, avg_el_mae, avg_path_length_mae  = results
     # (avg_delay, avg_power, avg_phase, avg_path_length_rmse, 
     #  avg_delay_mae, avg_power_mae, avg_phase_mae, avg_path_length_mae) = results
     scenario_row = {
@@ -817,6 +917,8 @@ for scenario in all_scenarios[:1]:
             "el_rmse": avg_el,
             "phase_rmse": avg_phase,
             "path_length_rmse": avg_path_length_rmse,
+            "interaction_accuracy": avg_interaction_accuracy,
+            "interaction_f1": avg_interaction_f1,
             "delay_mae": avg_delay_mae,
             "power_mae": avg_power_mae,
             "phase_mae": avg_phase_mae,
@@ -837,6 +939,3 @@ for scenario in all_scenarios[:1]:
 
     # %%
     # show_example(model, val_loader, sample_index=24)
-
-
-
