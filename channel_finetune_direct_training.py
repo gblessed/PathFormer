@@ -700,8 +700,8 @@ if __name__ == "__main__":
     #     required=True,
     #     help="Path to .pth checkpoint trained on path prediction (no channel loss)",
     # )
-    parser.add_argument("--epochs", type=int, default=50, help="Channel finetune epochs")
-    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate for channel finetune")
+    parser.add_argument("--epochs", type=int, default=10, help="Channel finetune epochs") 
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate for channel finetune")
     parser.add_argument("--eval_only", action="store_true", help="Only load path checkpoint and run evaluation")
     args = parser.parse_args()
 
@@ -709,7 +709,7 @@ if __name__ == "__main__":
     # path_checkpoint_path = args.path_checkpoint
     # /home/blessedg/Pathformer/checkpoints2/noise_enc_direct_city_35_san_francisco_3p5_interacaction_all_inter_str_dec_all_repeat_best_model_checkpoint.pth
     # path_checkpoint_path = f"/home/blessedg/Pathformer/checkpoints2/noise_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat_best_model_checkpoint.pth"
-    path_checkpoint_path = f"/home/blessedg/Pathformer/checkpoints2/delay_only_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat_best_model_checkpoint.pth"
+    path_checkpoint_path = f"/home/blessedg/Pathformer/checkpoints2/snoise_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat_best_model_checkpoint.pth"
     
 
     dm.download(scenario)

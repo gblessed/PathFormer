@@ -1,0 +1,2148 @@
+# %%
+# %%
+# !pip install DeepMIMO==4.0.0b10
+
+# %%
+# %%
+# =============================================================================
+# 1. IMPORTS AND WARNINGS SETUP
+#    - Load necessary PyTorch modules, utilities, and suppress UserWarnings
+# =============================================================================
+import argparse
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+import os
+import torch
+from tqdm import tqdm
+import math
+# from utils import (generate_channels_and_labels, tokenizer_train, tokenizer, make_sample, nmse_loss,
+                #    create_train_dataloader, patch_maker, count_parameters, train_lwm)
+from collections import defaultdict
+import numpy as np
+# import pretrained_model  # Assuming this contains the LWM model definition
+import matplotlib.pyplot as plt
+import warnings
+import os
+import bisect
+# from collections import defaultdict
+from tqdm import tqdm
+warnings.filterwarnings("ignore", category=UserWarning)
+# from utils import *
+import deepmimo as dm
+from sklearn.metrics import mean_squared_error
+import numpy as np
+from tqdm import tqdm
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.cluster import KMeans
+from models import PathDecoder, GPTPathDecoder
+from dataset.dataloaders import PreTrainMySeqDataLoader
+from k_means_utils import *
+from utils.utils import add_noise_to_paths
+
+from tqdm import tqdm
+import torch
+import numpy as np
+import pandas as pd
+import os
+
+csv_log_file = "playground_std_fix3_final_scenario_results.csv"
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run pretrained residual cluster-conditioned training/eval for a single scenario.")
+    parser.add_argument("scenario", nargs="?", default="city_47_chicago_3p5")
+    parser.add_argument("--csv-log-file", default=csv_log_file)
+    parser.add_argument("--checkpoint-dir", default="checkpoints2")
+    parser.add_argument("--pretrained-checkpoint", default=None)
+    parser.add_argument("--pretrained-checkpoint-dir", default="checkpoints2")
+    return parser.parse_args()
+
+
+args = parse_args()
+csv_log_file = args.csv_log_file
+
+# %%
+# scenario = 'city_89_nairobi_3p5'
+scenario = args.scenario
+
+dm.download(scenario)
+dataset = dm.load(scenario, )
+
+# %%
+dataset.scene.plot()
+
+
+# %%
+dm.info()
+
+
+# %%
+config = {
+    "BATCH_SIZE":128,
+    "PAD_VALUE": 0,
+    "USE_WANDB": False,
+    "LR":2e-5,
+    "epochs" : 100,
+    "interaction_weight": 0.01,
+    "experiment": f"noise_std_fix3_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
+    "hidden_dim": 512,
+    "n_layers": 8,
+    "n_heads": 8,
+    "use_delay_kmeans": True,
+    "n_clusters": 4,
+    "max_path_len_clusters": 26,
+    "cluster_features": ["delay", "power"],
+    "sequence_prototype_hidden_dim": 128,
+    "sequence_prototype_latent_dim": 96,
+    "sequence_prototype_epochs": 20,
+    "sequence_prototype_batch_size": 256,
+    "sequence_prototype_lr": 1e-3,
+    "delay_only_loss": False,
+    "TARGET_NOISE_PROB": 0.2,
+    "TARGET_NOISE_PARAMS": None,
+    "use_cluster_conditioning": True,
+    "use_cluster_mlp_head": False,
+    "freeze_backbone": True,
+    "residual_adapter_heads": 8,
+    "residual_adapter_layers": 2,
+    "residual_adapter_weight_decay": 1e-4,
+    "pretrained_checkpoint": None,
+}
+
+
+
+
+# %%
+
+
+
+# %%
+
+
+# %%
+train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power", pad_value=config["PAD_VALUE"])
+
+train_loader = torch.utils.data.DataLoader(
+    dataset     = train_data,
+    batch_size  = config['BATCH_SIZE'],
+    shuffle     = True,
+    collate_fn= train_data.collate_fn
+    )
+val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power", pad_value=config["PAD_VALUE"])
+val_loader = torch.utils.data.DataLoader(
+    dataset     = val_data,
+    batch_size  = config['BATCH_SIZE'],
+    shuffle     = False,
+    collate_fn= val_data.collate_fn
+    )
+
+for item in train_loader:
+    print(f"Prompt shape: {item[0].shape}, Paths shape: {item[1].shape}, Num paths shape: {item[2].shape}")
+    
+    break
+
+
+# %%
+print("No. of Train Points   : ", train_data.__len__())
+print("Batch Size           : ", config["BATCH_SIZE"])
+print("Train Batches        : ", train_loader.__len__())
+print("No. of Train Points   : ", val_data.__len__())
+print("Val Batches          : ", val_loader.__len__())
+
+def compute_stop_metrics(path_count, targets, pad_value=0):
+    """
+
+    Args:
+
+    """
+
+    rmse = np.sqrt(mean_squared_error(path_count.cpu().numpy(), targets.squeeze().cpu().numpy()))
+    
+    return rmse 
+
+
+def compute_interaction_metrics_from_binary_predictions(interaction_preds, interaction_targets):
+    interaction_mask = (interaction_targets[:, :, 0] != -1)
+
+    if not interaction_mask.any():
+        return 0.0, 0.0
+
+    valid_preds = interaction_preds[interaction_mask].int().cpu().numpy()
+    valid_targets = interaction_targets[interaction_mask].int().cpu().numpy()
+
+    accuracy = accuracy_score(valid_targets.reshape(-1), valid_preds.reshape(-1))
+    f1 = f1_score(valid_targets.reshape(-1), valid_preds.reshape(-1), zero_division=0)
+    return accuracy, f1
+
+
+def _convert_feature_value(key, value):
+    if key == "delay":
+        return float(value) * 1e6
+    if key == "power":
+        return float(value) * 0.01
+    if key in ["phase", "aoa_az", "aoa_el"]:
+        return float(value) * (np.pi / 180.0)
+    return float(value)
+
+
+def _normalize_feature_value(dataloader_obj, key, value):
+    if getattr(dataloader_obj, "normalizers", None) and getattr(dataloader_obj, "apply_normalizers", None):
+        if key in dataloader_obj.apply_normalizers:
+            stat = dataloader_obj.normalizers.get(key, None)
+            if stat is not None:
+                return (value - stat["mean"]) / (stat["std"] + 1e-8)
+    return value
+
+
+def _sorted_path_indices(df, idx, sort_by):
+    delays_raw = np.array(df["delay"][idx])
+    powers_raw = np.array(df["power"][idx])
+    if sort_by == "power":
+        return np.argsort(-powers_raw)
+    return np.argsort(delays_raw)
+
+
+def _collect_step_vectors_from_base_dataset(base_dataset, feature_keys, max_path_len):
+    df = base_dataset.dataset_filtered
+    n_samples = len(df["delay"])
+    step_vectors = [[] for _ in range(max_path_len)]
+    rx_xy_list = []
+    seq_vectors = []
+    valid_lens = []
+    mins = np.array(base_dataset.mins)
+    maxs = np.array(base_dataset.maxs)
+    norm = getattr(base_dataset, "normalizers", None)
+    apply_norm = getattr(base_dataset, "apply_normalizers", None) or []
+
+    for idx in range(n_samples):
+        rx_raw = np.array(df["rx_pos"][idx], dtype=np.float32)
+        rx_xy = rx_raw[:2]
+        if norm and "pos" in apply_norm:
+            rx_xy = (rx_xy - norm["rx_pos"]["mean"][:2]) / (norm["rx_pos"]["std"][:2] + 1e-8)
+        else:
+            rx_xy = (rx_xy - mins[:2]) / (maxs[:2] - mins[:2] + 1e-8)
+        rx_xy_list.append(rx_xy)
+
+        seq = np.zeros((max_path_len, len(feature_keys)), dtype=np.float32)
+        indices = _sorted_path_indices(df, idx, base_dataset.sort_by)
+        step = 0
+        for path_idx in indices:
+            if step >= max_path_len:
+                break
+            vec = []
+            broken = False
+            for key in feature_keys:
+                value = np.array(df[key][idx])[path_idx]
+                if np.isnan(value):
+                    broken = True
+                    break
+                value = _convert_feature_value(key, value)
+                value = _normalize_feature_value(base_dataset, key, value)
+                vec.append(value)
+            if broken:
+                break
+            vec = np.array(vec, dtype=np.float32)
+            seq[step] = vec
+            step_vectors[step].append(vec)
+            step += 1
+        seq_vectors.append(seq)
+        valid_lens.append(step)
+
+    return (
+        np.array(rx_xy_list, dtype=np.float32),
+        np.array(seq_vectors, dtype=np.float32),
+        np.array(valid_lens, dtype=np.int64),
+        step_vectors,
+    )
+
+
+class SequencePrototypeAutoencoder(nn.Module):
+    """Learns a latent for the whole path sequence, then decodes it back to the feature trajectory."""
+
+    def __init__(
+        self,
+        input_dim,
+        max_path_len,
+        hidden_dim=128,
+        latent_dim=96,
+        n_heads=4,
+        n_layers=2,
+        memory_slots=4,
+    ):
+        super().__init__()
+        self.max_path_len = max_path_len
+        self.hidden_dim = hidden_dim
+        self.input_proj = nn.Linear(input_dim, hidden_dim)
+        self.pos_emb = nn.Embedding(max_path_len, hidden_dim)
+        self.query_emb = nn.Embedding(max_path_len, hidden_dim)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=n_heads,
+            dim_feedforward=4 * hidden_dim,
+            batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+        self.to_latent = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, latent_dim),
+        )
+        self.latent_to_memory = nn.Linear(latent_dim, memory_slots * hidden_dim)
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=hidden_dim,
+            nhead=n_heads,
+            dim_feedforward=4 * hidden_dim,
+            batch_first=True,
+        )
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=n_layers)
+        self.output_proj = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, input_dim),
+        )
+        self.memory_slots = memory_slots
+
+    def encode(self, seq, pad_mask):
+        x = self.input_proj(seq)
+        pos = self.pos_emb(torch.arange(seq.size(1), device=seq.device)).unsqueeze(0)
+        x = x + pos
+        safe_pad_mask = pad_mask.clone()
+        if safe_pad_mask.size(1) > 0:
+            all_padded = safe_pad_mask.all(dim=1)
+            safe_pad_mask[all_padded, 0] = False
+            x[all_padded] = 0.0
+        h = self.encoder(x, src_key_padding_mask=safe_pad_mask)
+        valid = (~pad_mask).float().unsqueeze(-1)
+        pooled = (h * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1.0)
+        return self.to_latent(pooled)
+
+    def forward(self, seq, pad_mask):
+        latent = self.encode(seq, pad_mask)
+        memory = self.latent_to_memory(latent).view(seq.size(0), self.memory_slots, self.hidden_dim)
+        query = self.query_emb(torch.arange(seq.size(1), device=seq.device)).unsqueeze(0).expand(seq.size(0), -1, -1)
+        recon_h = self.decoder(tgt=query, memory=memory)
+        recon = self.output_proj(recon_h)
+        return recon, latent
+
+
+def _compute_sequence_feature_stats(seq_vectors, valid_lens):
+    time_idx = np.arange(seq_vectors.shape[1])[None, :]
+    valid_mask = time_idx < valid_lens[:, None]
+    if not valid_mask.any():
+        feature_mean = np.zeros(seq_vectors.shape[-1], dtype=np.float32)
+        feature_std = np.ones(seq_vectors.shape[-1], dtype=np.float32)
+    else:
+        flat_valid = seq_vectors[valid_mask]
+        feature_mean = flat_valid.mean(axis=0).astype(np.float32)
+        feature_std = flat_valid.std(axis=0).astype(np.float32)
+        feature_std = np.maximum(feature_std, 1e-4)
+    return feature_mean, feature_std
+
+
+def _normalize_sequence_vectors(seq_vectors, valid_lens, feature_mean, feature_std):
+    norm = (seq_vectors - feature_mean[None, None, :]) / feature_std[None, None, :]
+    time_idx = np.arange(seq_vectors.shape[1])[None, :]
+    valid_mask = time_idx < valid_lens[:, None]
+    norm[~valid_mask] = 0.0
+    return norm.astype(np.float32), valid_mask
+
+
+def train_sequence_autoencoder(
+    seq_vectors,
+    valid_lens,
+    device,
+    hidden_dim=128,
+    latent_dim=96,
+    n_heads=4,
+    n_layers=2,
+    epochs=25,
+    batch_size=256,
+    lr=1e-3,
+):
+    max_path_len = seq_vectors.shape[1]
+    feature_dim = seq_vectors.shape[2]
+    feature_mean, feature_std = _compute_sequence_feature_stats(seq_vectors, valid_lens)
+    seq_norm, valid_mask = _normalize_sequence_vectors(seq_vectors, valid_lens, feature_mean, feature_std)
+
+    model = SequencePrototypeAutoencoder(
+        input_dim=feature_dim,
+        max_path_len=max_path_len,
+        hidden_dim=hidden_dim,
+        latent_dim=latent_dim,
+        n_heads=n_heads,
+        n_layers=n_layers,
+    ).to(device)
+
+    if seq_vectors.shape[0] == 0:
+        return model, feature_mean, feature_std, seq_norm
+
+    seq_tensor = torch.tensor(seq_norm, dtype=torch.float32)
+    pad_mask_tensor = torch.tensor(~valid_mask, dtype=torch.bool)
+    dataset = torch.utils.data.TensorDataset(seq_tensor, pad_mask_tensor)
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=min(batch_size, max(1, len(dataset))),
+        shuffle=True,
+    )
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0.0
+        total_weight = 0.0
+        for batch_seq, batch_pad_mask in loader:
+            batch_seq = batch_seq.to(device)
+            batch_pad_mask = batch_pad_mask.to(device)
+            recon, _ = model(batch_seq, batch_pad_mask)
+            valid = (~batch_pad_mask).float().unsqueeze(-1)
+            loss = ((recon - batch_seq) ** 2 * valid).sum() / valid.sum().clamp_min(1.0)
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            total_loss += float(loss.item()) * float(valid.sum().item())
+            total_weight += float(valid.sum().item())
+        if epoch == 0 or (epoch + 1) % max(1, epochs // 5) == 0 or epoch == epochs - 1:
+            avg_loss = total_loss / max(total_weight, 1.0)
+            print(f"  [ProtoAE] epoch {epoch + 1:02d}/{epochs} recon={avg_loss:.6f}")
+
+    return model, feature_mean, feature_std, seq_norm
+
+
+def encode_sequences_with_autoencoder(model, seq_norm, valid_lens, device, batch_size=512):
+    if seq_norm.shape[0] == 0:
+        return np.zeros((0, model.to_latent[-1].out_features), dtype=np.float32)
+
+    latents = []
+    seq_tensor = torch.tensor(seq_norm, dtype=torch.float32)
+    time_idx = np.arange(seq_norm.shape[1])[None, :]
+    pad_mask_np = ~(time_idx < valid_lens[:, None])
+    pad_mask_tensor = torch.tensor(pad_mask_np, dtype=torch.bool)
+    dataset = torch.utils.data.TensorDataset(seq_tensor, pad_mask_tensor)
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=min(batch_size, max(1, len(dataset))),
+        shuffle=False,
+    )
+
+    model.eval()
+    with torch.no_grad():
+        for batch_seq, batch_pad_mask in loader:
+            batch_seq = batch_seq.to(device)
+            batch_pad_mask = batch_pad_mask.to(device)
+            batch_latent = model.encode(batch_seq, batch_pad_mask)
+            latents.append(batch_latent.cpu())
+
+    if not latents:
+        return np.zeros((0, model.to_latent[-1].out_features), dtype=np.float32)
+    return torch.cat(latents, dim=0).numpy().astype(np.float32)
+
+
+def build_sequence_prototype_lookup(
+    base_dataset,
+    feature_keys,
+    device,
+    max_path_len=26,
+    n_clusters=4,
+    random_state=42,
+    proto_hidden_dim=128,
+    proto_latent_dim=96,
+    proto_epochs=25,
+    proto_batch_size=256,
+    proto_lr=1e-3,
+):
+    n_features = len(feature_keys)
+    rx_xy, seq_vectors, valid_lens, _ = _collect_step_vectors_from_base_dataset(base_dataset, feature_keys, max_path_len)
+
+    autoencoder, feature_mean, feature_std, seq_norm = train_sequence_autoencoder(
+        seq_vectors,
+        valid_lens,
+        device=device,
+        hidden_dim=proto_hidden_dim,
+        latent_dim=proto_latent_dim,
+        epochs=proto_epochs,
+        batch_size=proto_batch_size,
+        lr=proto_lr,
+    )
+    latent_vectors = encode_sequences_with_autoencoder(autoencoder, seq_norm, valid_lens, device=device)
+
+    n_samples = seq_vectors.shape[0]
+    if n_samples == 0:
+        return {
+            "train_rx_pos": rx_xy,
+            "sample_prototype_idx": np.zeros((0,), dtype=np.int64),
+            "prototype_memory": np.zeros((n_clusters, max_path_len, 2 * n_features), dtype=np.float32),
+            "prototype_valid_len": np.ones((n_clusters,), dtype=np.int64),
+            "prototype_rx_pos": np.zeros((n_clusters, 2), dtype=np.float32),
+            "prototype_cluster_sizes": np.zeros((n_clusters,), dtype=np.int64),
+            "feature_mean": feature_mean,
+            "feature_std": feature_std,
+        }
+
+    if n_samples < n_clusters:
+        labels = np.arange(n_samples, dtype=np.int64)
+        cluster_centers = latent_vectors.copy()
+        while cluster_centers.shape[0] < n_clusters:
+            cluster_centers = np.concatenate([cluster_centers, cluster_centers[-1:]], axis=0)
+    else:
+        km = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
+        labels = km.fit_predict(latent_vectors).astype(np.int64)
+        cluster_centers = km.cluster_centers_.astype(np.float32)
+
+    prototype_memory = np.zeros((n_clusters, max_path_len, 2 * n_features), dtype=np.float32)
+    prototype_valid_len = np.ones((n_clusters,), dtype=np.int64)
+    prototype_rx_pos = np.zeros((n_clusters, 2), dtype=np.float32)
+    prototype_cluster_sizes = np.zeros((n_clusters,), dtype=np.int64)
+
+    for cluster_idx in range(n_clusters):
+        member_idx = np.where(labels == cluster_idx)[0]
+        if len(member_idx) == 0:
+            nearest_idx = int(np.argmin(np.linalg.norm(latent_vectors - cluster_centers[cluster_idx][None, :], axis=1)))
+            member_idx = np.array([nearest_idx], dtype=np.int64)
+        prototype_cluster_sizes[cluster_idx] = len(member_idx)
+        member_seq = seq_vectors[member_idx]
+        member_lens = valid_lens[member_idx]
+        prototype_rx_pos[cluster_idx] = rx_xy[member_idx].mean(axis=0)
+        prototype_valid = int(np.clip(np.round(np.median(member_lens)), 1, max_path_len))
+        prototype_valid_len[cluster_idx] = prototype_valid
+
+        for t in range(prototype_valid):
+            step_mask = member_lens > t
+            if not np.any(step_mask):
+                break
+            step_values = member_seq[step_mask, t, :]
+            prototype_memory[cluster_idx, t, :n_features] = step_values.mean(axis=0)
+            prototype_memory[cluster_idx, t, n_features:] = step_values.std(axis=0)
+
+    print(
+        "Prepared sequence-level prototype bank "
+        f"(clusters={n_clusters}, feature_dim={n_features}, median_cluster_size={int(np.median(prototype_cluster_sizes))})"
+    )
+
+    return {
+        "train_rx_pos": rx_xy,
+        "sample_prototype_idx": labels.astype(np.int64),
+        "prototype_memory": prototype_memory.astype(np.float32),
+        "prototype_valid_len": prototype_valid_len.astype(np.int64),
+        "prototype_rx_pos": prototype_rx_pos.astype(np.float32),
+        "prototype_cluster_sizes": prototype_cluster_sizes.astype(np.int64),
+        "feature_mean": feature_mean.astype(np.float32),
+        "feature_std": feature_std.astype(np.float32),
+    }
+
+
+def lookup_cluster_center_std_by_position(prompts, cluster_lookup_data, device, prompt_rx_slice=(3, 5)):
+    batch_size = prompts.shape[0]
+    rx_query = prompts[:, prompt_rx_slice[0]:prompt_rx_slice[1]].detach().cpu().numpy()
+    prototype_memory = cluster_lookup_data["prototype_memory"]
+    prototype_valid_len = cluster_lookup_data["prototype_valid_len"]
+    train_rx_pos = cluster_lookup_data["train_rx_pos"]
+    sample_prototype_idx = cluster_lookup_data["sample_prototype_idx"]
+
+    max_t = prototype_memory.shape[1]
+    feature_dim = prototype_memory.shape[2]
+    batch = np.zeros((batch_size, max_t, feature_dim), dtype=np.float32)
+    pad_mask = np.ones((batch_size, max_t), dtype=bool)
+
+    if train_rx_pos.shape[0] == 0:
+        return (
+            torch.tensor(batch, dtype=torch.float32, device=device),
+            torch.tensor(pad_mask, dtype=torch.bool, device=device),
+        )
+
+    for b in range(batch_size):
+        dist = np.sqrt(np.sum((train_rx_pos - rx_query[b]) ** 2, axis=1))
+        nn_idx = int(np.argmin(dist))
+        proto_idx = int(sample_prototype_idx[nn_idx])
+        batch[b] = prototype_memory[proto_idx]
+        valid = int(prototype_valid_len[proto_idx])
+        pad_mask[b, :valid] = False
+        pad_mask[b, valid:] = True
+
+    return (
+        torch.tensor(batch, dtype=torch.float32, device=device),
+        torch.tensor(pad_mask, dtype=torch.bool, device=device),
+    )
+
+
+class PathDecoderClusterCenterStdAdapter(nn.Module):
+    def __init__(self, backbone, hidden_dim, cluster_feature_dim, prompt_dim=6):
+        super().__init__()
+        self.backbone = backbone
+        self.cluster_embed = nn.Sequential(
+            nn.Linear(cluster_feature_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+        )
+        self.cluster_to_prompt = nn.Linear(hidden_dim, prompt_dim)
+
+    def forward(self, prompts, paths, interactions, cluster_center_std=None, cluster_pad_mask=None):
+        batch_size = prompts.shape[0]
+        if cluster_center_std is None:
+            cluster_summary = torch.zeros(
+                batch_size,
+                self.cluster_to_prompt.in_features,
+                device=prompts.device,
+                dtype=prompts.dtype,
+            )
+        else:
+            emb = self.cluster_embed(cluster_center_std)
+            if cluster_pad_mask is not None:
+                valid = (~cluster_pad_mask).float().unsqueeze(-1)
+                denom = valid.sum(dim=1).clamp_min(1.0)
+                cluster_summary = (emb * valid).sum(dim=1) / denom
+            else:
+                cluster_summary = emb.mean(dim=1)
+        prompts_aug = prompts + self.cluster_to_prompt(cluster_summary)
+        return self.backbone(prompts_aug, paths, interactions)
+
+
+class PathDecoderClusterEncoderAttentionFix1(nn.Module):
+    """Cluster-aware decoder with boolean memory masking and ordered memory tokens."""
+
+    def __init__(
+        self,
+        prompt_dim=6,
+        hidden_dim=512,
+        n_layers=6,
+        n_heads=4,
+        cluster_feature_dim=None,
+        max_T=35,
+        prefix_len=4,
+        pad_value=500,
+        cluster_encoder_layers=2,
+    ):
+        super().__init__()
+        self.pad_value = pad_value
+        self.hidden_dim = hidden_dim
+        self.cluster_feature_dim = cluster_feature_dim
+        self.prefix_len = prefix_len
+        self.max_T = max_T
+
+        self.cluster_embed = nn.Sequential(
+            nn.Linear(cluster_feature_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+        )
+        self.prompt_to_prefix = nn.Linear(prompt_dim, prefix_len * hidden_dim)
+        self.path_in = nn.Linear(12, hidden_dim)
+        self.pos_emb = nn.Embedding(max_T, hidden_dim)
+        self.cluster_pos_emb = nn.Embedding(max_T, hidden_dim)
+        self.memory_pos_emb = nn.Embedding(prefix_len + max_T, hidden_dim)
+
+        cluster_encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=n_heads,
+            dim_feedforward=4 * hidden_dim,
+            batch_first=True,
+        )
+        self.cluster_encoder = nn.TransformerEncoder(cluster_encoder_layer, num_layers=cluster_encoder_layers)
+        self.cluster_norm = nn.LayerNorm(hidden_dim)
+
+        self.interaction_head = nn.Linear(hidden_dim, 4)
+
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=hidden_dim,
+            nhead=n_heads,
+            dim_feedforward=4 * hidden_dim,
+            batch_first=True,
+        )
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=n_layers)
+
+        self.out_delay = nn.Sequential(nn.Linear(hidden_dim, 1))
+        self.out_power = nn.Sequential(nn.Linear(hidden_dim, 1))
+        self.out = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 6),
+        )
+        self.pathcount_head = nn.Sequential(
+            nn.Linear(prefix_len * hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def _build_memory(self, prompts, cluster_center_std=None, cluster_pad_mask=None):
+        batch_size = prompts.size(0)
+        device = prompts.device
+
+        prefix = self.prompt_to_prefix(prompts).view(batch_size, self.prefix_len, self.hidden_dim)
+        prefix_mask = torch.zeros(batch_size, self.prefix_len, dtype=torch.bool, device=device)
+
+        if cluster_center_std is None:
+            cluster_tokens = prefix.new_zeros(batch_size, 0, self.hidden_dim)
+            cluster_pad_mask = torch.zeros(batch_size, 0, dtype=torch.bool, device=device)
+        else:
+            cluster_tokens = self.cluster_embed(cluster_center_std)
+            if cluster_pad_mask is None:
+                cluster_pad_mask = torch.zeros(
+                    batch_size,
+                    cluster_tokens.size(1),
+                    dtype=torch.bool,
+                    device=device,
+                )
+            else:
+                cluster_pad_mask = cluster_pad_mask.to(device=device, dtype=torch.bool)
+
+            cluster_pos = self.cluster_pos_emb(torch.arange(cluster_tokens.size(1), device=device)).unsqueeze(0)
+            cluster_tokens = cluster_tokens + cluster_pos
+            safe_cluster_pad_mask = cluster_pad_mask.clone()
+            if safe_cluster_pad_mask.size(1) > 0:
+                all_padded = safe_cluster_pad_mask.all(dim=1)
+                safe_cluster_pad_mask[all_padded, 0] = False
+                cluster_tokens[all_padded] = 0.0
+            cluster_tokens = self.cluster_encoder(
+                cluster_tokens,
+                src_key_padding_mask=safe_cluster_pad_mask,
+            )
+            cluster_tokens = self.cluster_norm(cluster_tokens)
+
+        memory = torch.cat([prefix, cluster_tokens], dim=1)
+        memory_pos = self.memory_pos_emb(torch.arange(memory.size(1), device=device)).unsqueeze(0)
+        memory = memory + memory_pos
+        memory_mask = torch.cat([prefix_mask, cluster_pad_mask], dim=1)
+        return prefix, memory, memory_mask
+
+    def forward(self, prompts, paths, interactions, cluster_center_std=None, cluster_pad_mask=None):
+        batch_size, total_len, _ = paths.shape
+        prefix, memory, memory_mask = self._build_memory(
+            prompts,
+            cluster_center_std=cluster_center_std,
+            cluster_pad_mask=cluster_pad_mask,
+        )
+
+        phase = paths[:, :, 2]
+        sinp = torch.sin(phase)
+        cosp = torch.cos(phase)
+
+        aoa_az = paths[:, :, 3]
+        sin_az = torch.sin(aoa_az)
+        cos_az = torch.cos(aoa_az)
+
+        aoa_el = paths[:, :, 4]
+        sin_el = torch.sin(aoa_el)
+        cos_el = torch.cos(aoa_el)
+
+        x = torch.stack(
+            [paths[:, :, 0], paths[:, :, 1], sinp, cosp, sin_az, cos_az, sin_el, cos_el],
+            dim=-1,
+        )
+
+        interactions_clean = interactions.clone()
+        interactions_clean[interactions_clean == -1] = 0
+        x = torch.cat([x, interactions_clean], dim=-1)
+        x = self.path_in(x)
+
+        pos = self.pos_emb(torch.arange(total_len, device=x.device)).unsqueeze(0)
+        x = x + pos
+        causal_mask = torch.triu(torch.ones(total_len, total_len, device=x.device), diagonal=1).bool()
+
+        h_paths = self.decoder(
+            tgt=x,
+            memory=memory,
+            tgt_mask=causal_mask,
+            memory_key_padding_mask=memory_mask,
+        )
+
+        out = self.out(h_paths)
+        delay_pred = self.out_delay(h_paths).squeeze(-1)
+        power_pred = self.out_power(h_paths).squeeze(-1)
+        phase_sin_pred = out[:, :, 0]
+        phase_cos_pred = out[:, :, 1]
+        az_sin_pred = out[:, :, 2]
+        az_cos_pred = out[:, :, 3]
+        el_sin_pred = out[:, :, 4]
+        el_cos_pred = out[:, :, 5]
+
+        phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)
+        az_pred = torch.atan2(az_sin_pred, az_cos_pred)
+        el_pred = torch.atan2(el_sin_pred, el_cos_pred)
+        interaction_logits = self.interaction_head(h_paths)
+
+        prefix_flat = prefix.reshape(batch_size, -1)
+        pathcounts = self.pathcount_head(prefix_flat)
+
+        return (
+            delay_pred,
+            power_pred,
+            phase_sin_pred,
+            phase_cos_pred,
+            phase_pred,
+            az_sin_pred,
+            az_cos_pred,
+            az_pred,
+            el_sin_pred,
+            el_cos_pred,
+            el_pred,
+            pathcounts,
+            interaction_logits,
+        )
+
+    def forward_hidden(self, prompts, paths, interactions, cluster_center_std=None, cluster_pad_mask=None):
+        batch_size, total_len, _ = paths.shape
+        prefix, memory, memory_mask = self._build_memory(
+            prompts,
+            cluster_center_std=cluster_center_std,
+            cluster_pad_mask=cluster_pad_mask,
+        )
+
+        phase = paths[:, :, 2]
+        sinp = torch.sin(phase)
+        cosp = torch.cos(phase)
+        aoa_az = paths[:, :, 3]
+        sin_az = torch.sin(aoa_az)
+        cos_az = torch.cos(aoa_az)
+        aoa_el = paths[:, :, 4]
+        sin_el = torch.sin(aoa_el)
+        cos_el = torch.cos(aoa_el)
+
+        x = torch.stack(
+            [paths[:, :, 0], paths[:, :, 1], sinp, cosp, sin_az, cos_az, sin_el, cos_el],
+            dim=-1,
+        )
+        interactions_clean = interactions.clone()
+        interactions_clean[interactions_clean == -1] = 0
+        x = torch.cat([x, interactions_clean], dim=-1)
+        x = self.path_in(x)
+
+        pos = self.pos_emb(torch.arange(total_len, device=x.device)).unsqueeze(0)
+        x = x + pos
+        causal_mask = torch.triu(torch.ones(total_len, total_len, device=x.device), diagonal=1).bool()
+
+        h_paths = self.decoder(
+            tgt=x,
+            memory=memory,
+            tgt_mask=causal_mask,
+            memory_key_padding_mask=memory_mask,
+        )
+        prefix_flat = prefix.reshape(batch_size, -1)
+        return h_paths, prefix_flat
+
+
+def generate_paths_no_env_batch(model, prompts, max_steps=25, stop_threshold=0.5, cluster_center_std=None, cluster_pad_mask=None):
+    model.eval()
+    device = next(model.parameters()).device
+    prompts = prompts.to(device)
+    batch_size = prompts.size(0)
+    cur = torch.zeros(batch_size, 1, 5, device=device)
+    inter_str = -1 * torch.ones(batch_size, 1, 4, device=device)
+    outputs = []
+    outputs_inter_str = []
+
+    for _ in range(max_steps):
+        d, p, s, c, ph, az_s, az_c, az, el_s, el_c, el, pathcounts, inter_str_logits = model(
+            prompts,
+            cur,
+            inter_str,
+            cluster_center_std=cluster_center_std,
+            cluster_pad_mask=cluster_pad_mask,
+        )
+
+        d_t = d[:, -1]
+        p_t = p[:, -1]
+        ph_t = ph[:, -1]
+        az_t = az[:, -1]
+        el_t = el[:, -1]
+        inter_logits_t = inter_str_logits[:, -1]
+        inter_pred_t = (torch.sigmoid(inter_logits_t) > 0.5).float()
+
+        outputs.append(torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1))
+        outputs_inter_str.append(inter_pred_t)
+
+        next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1).unsqueeze(1)
+        cur = torch.cat([cur, next_path], dim=1)
+        inter_str = torch.cat([inter_str, inter_pred_t.unsqueeze(1)], dim=1)
+
+    return (
+        torch.stack(outputs, dim=1).detach().cpu(),
+        pathcounts,
+        torch.stack(outputs_inter_str, dim=1).detach().cpu(),
+    )
+
+
+
+def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False, pad_value=0, data_stats=None,
+                   cluster_lookup_data=None):
+    """
+    cluster_lookup_data: sequence-level prototype lookup used for NN retrieval by prompt RX position.
+    """
+    model.eval()
+    device = next(model.parameters()).device
+
+    delay_errors = []
+    power_errors = []
+    phase_errors = []
+    path_length_rmses = []
+
+
+
+    delay_maes = []
+    power_maes = []
+    phase_maes = []
+    path_length_maes = []
+    # AoA metrics
+    az_errors = []
+    el_errors = []
+    az_maes = []
+    el_maes = []
+    interaction_targets_all = []
+    interaction_preds_all = []
+    with torch.no_grad():
+        outer_bar = tqdm(val_loader, desc="Evaluating (batches)", leave=True)
+
+        for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in outer_bar:
+            prompts = prompts.cuda()
+            paths = paths.cuda()
+            path_lengths = path_lengths.cuda()
+            interactions = interactions.cuda()
+            path_padding_mask = path_padding_mask.cuda()
+            cluster_center_std, cluster_pad_mask = None, None
+            if cluster_lookup_data is not None:
+                cluster_center_std, cluster_pad_mask = lookup_cluster_center_std_by_position(
+                    prompts, cluster_lookup_data, device
+                )
+
+            generated, path_lengths_pred, inter_str_pred = generate_paths_no_env_batch(
+                model,
+                prompts,
+                max_steps=max_generate,
+                cluster_center_std=cluster_center_std,
+                cluster_pad_mask=cluster_pad_mask,
+            )
+
+            generated = generated.cuda()
+            inter_str_pred = inter_str_pred.cpu()
+            if path_lengths_pred.dim() > 1:
+                path_lengths_pred = path_lengths_pred.squeeze(-1)
+
+            batch_delay_rmses = []
+            batch_power_rmses = []
+            batch_phase_rmses = []
+            batch_length_rmses = []
+            batch_az_rmses = []
+            batch_el_rmses = []
+
+            for b in range(prompts.size(0)):
+                # Use path length for valid positions (mask-based; pad value is 0)
+                n_valid = int(round(path_lengths[b].item() * 25))
+                gt = paths[b][1:1 + n_valid, :5]
+                gt_interactions = interactions[b][1:1 + n_valid, :]
+
+                T = min(len(gt), generated.size(1))
+                pred = generated[b, :T]
+                gt = gt[:T]
+                pred_interactions = inter_str_pred[b, :T]
+                gt_interactions = gt_interactions[:T].detach().cpu()
+
+                valid_interaction_mask = (gt_interactions[:, 0] != -1)
+                if valid_interaction_mask.any():
+                    interaction_targets_all.append(gt_interactions[valid_interaction_mask].numpy().astype(np.int32))
+                    interaction_preds_all.append(pred_interactions[valid_interaction_mask].numpy().astype(np.int32))
+
+                delay_pred = pred[:,0]
+                delay = gt[:,0]
+
+                power_pred = pred[:,1]
+                power = gt[:,1]
+
+                phase_pred = pred[:,2]
+                phase = gt[:,2]
+
+                aoa_az_pred = pred[:,3]
+                aoa_az = gt[:,3]
+              
+                aoa_el_pred = pred[:,4]
+                aoa_el = gt[:,4]
+
+                # Denormalize when data_stats provided (model was trained on normalized data)
+                if data_stats is not None:
+                    def denorm(x, key):
+                        if key not in data_stats:
+                            return x
+                        s, m = data_stats[key]["std"], data_stats[key]["mean"]
+                        return x * s + m
+                    delay_pred = denorm(pred[:,0], "delay")
+                    delay = denorm(gt[:,0], "delay")
+                    power_pred = denorm(pred[:,1], "power")
+                    power = denorm(gt[:,1], "power")
+                    phase_pred = denorm(pred[:,2], "phase")
+                    phase = denorm(gt[:,2], "phase")
+                    aoa_az_pred = denorm(pred[:,3], "aoa_az")
+                    aoa_az = denorm(gt[:,3], "aoa_az")
+                    aoa_el_pred = denorm(pred[:,4], "aoa_el")
+                    aoa_el = denorm(gt[:,4], "aoa_el")
+
+
+                # ---- Compute Metrics ----
+                delay_rmse = torch.mean((delay_pred - delay)**2).sqrt().item()
+                delay_mae = torch.mean(torch.abs(delay_pred - delay)).item()
+
+                power_rmse = torch.mean((power_pred/0.01 -power/0.01)**2).sqrt().item()
+                power_mae = torch.mean((torch.abs(power_pred/0.01 -power/0.01))).item()
+
+
+                # Phase errors
+                y_hat_angles = (phase_pred / (np.pi/180))
+                y_angles = (phase / (np.pi/180))
+                phase_circular_dist = (y_hat_angles - y_angles + 180) % 360 - 180
+                phase_rmse = torch.mean(phase_circular_dist**2).sqrt().item()
+                phase_mae = torch.mean(torch.abs(phase_circular_dist)).item()
+
+                # AoA azimuth errors
+                y_hat_az = (aoa_az_pred / (np.pi/180))
+                y_az = (aoa_az / (np.pi/180))
+
+                az_circular_dist = (y_hat_az - y_az + 180) % 360 - 180
+                az_rmse = torch.mean(az_circular_dist**2).sqrt().item()
+                az_mae = torch.mean(torch.abs(az_circular_dist)).item()
+
+                # AoA elevation errors
+                y_hat_el = (aoa_el_pred / (np.pi/180))
+                y_el = (aoa_el/ (np.pi/180))
+                el_circular_dist = (y_hat_el - y_el + 180) % 360 - 180
+                el_rmse = torch.mean(el_circular_dist**2).sqrt().item()
+                el_mae = torch.mean(torch.abs(el_circular_dist)).item()
+
+                # Path length RMSE (path_lengths in [0,1]; pathcounts raw; use same scale)
+                pl_pred = path_lengths_pred[b].squeeze()
+                pl_gt = path_lengths[b].squeeze()
+                length_rmse = (torch.mean((pl_pred - pl_gt)**2)).sqrt().item()
+                length_mae = (torch.mean(torch.abs(pl_pred - pl_gt))).item()
+
+
+                # Save metrics
+                delay_errors.append(delay_rmse)
+                power_errors.append(power_rmse)
+                phase_errors.append(phase_rmse)
+                path_length_rmses.append(length_rmse)
+                # AoA
+                az_errors.append(az_rmse)
+                el_errors.append(el_rmse)
+
+                delay_maes.append(delay_mae)
+                power_maes.append(power_mae)
+                phase_maes.append(phase_mae)
+                path_length_maes.append(length_mae)
+                az_maes.append(az_mae)
+                el_maes.append(el_mae)
+                batch_delay_rmses.append(delay_rmse)
+                batch_power_rmses.append(power_rmse)
+                batch_phase_rmses.append(phase_rmse)
+                batch_length_rmses.append(length_rmse)
+                batch_az_rmses.append(az_rmse)
+                batch_el_rmses.append(el_rmse)
+
+                # wandb logging
+                if log_to_wandb:
+                    wandb.log({
+                        "test_delay_rmse": delay_rmse,
+                        "test_power_rmse": power_rmse,
+                        "test_phase_circ_err": phase_rmse,
+                        "test_stop_length_rmse": length_rmse,
+                        "test_az_rmse": az_rmse,
+                        "test_el_rmse": el_rmse,
+                        "test_delay_mae": delay_mae,
+                        "test_power_mae": power_mae,
+                        "test_phase_circ_err_mae": phase_mae,
+                        "test_az_mae": az_mae,
+                        "test_el_mae": el_mae,
+                        "test_stop_length_mae": length_mae,
+                    })
+
+            if batch_delay_rmses:
+                outer_bar.set_postfix({
+                    "delay_rmse": f"{np.mean(batch_delay_rmses):.3f}",
+                    "power_rmse": f"{np.mean(batch_power_rmses):.3f}",
+                    "phase_rmse": f"{np.mean(batch_phase_rmses):.3f}",
+                    "az_rmse": f"{np.mean(batch_az_rmses):.3f}",
+                    "el_rmse": f"{np.mean(batch_el_rmses):.3f}",
+                    "length_rmse": f"{np.mean(batch_length_rmses):.3f}",
+                })
+            
+
+    # ---- Final Aggregated Results ----
+    avg_delay = np.mean(delay_errors)
+    avg_power = np.mean(power_errors)
+    avg_phase = np.mean(phase_errors)
+    avg_az = np.mean(az_errors) if len(az_errors) > 0 else 0.0
+    avg_el = np.mean(el_errors) if len(el_errors) > 0 else 0.0
+    avg_path_length_rmse = np.mean(path_length_rmses)
+   
+    avg_delay_mae = np.mean(delay_maes)
+    avg_power_mae = np.mean(power_maes)
+    avg_phase_mae = np.mean(phase_maes)
+    avg_az_mae = np.mean(az_maes)
+    avg_el_mae = np.mean(el_maes)
+    avg_path_length_mae= np.mean(path_length_maes)
+    if interaction_targets_all:
+        interaction_targets_np = np.concatenate(interaction_targets_all, axis=0)
+        interaction_preds_np = np.concatenate(interaction_preds_all, axis=0)
+        avg_interaction_accuracy = accuracy_score(
+            interaction_targets_np.reshape(-1),
+            interaction_preds_np.reshape(-1),
+        )
+        avg_interaction_f1 = f1_score(
+            interaction_targets_np.reshape(-1),
+            interaction_preds_np.reshape(-1),
+            zero_division=0,
+        )
+    else:
+        avg_interaction_accuracy = 0.0
+        avg_interaction_f1 = 0.0
+
+    print("\n=================  Final EVALUATION RESULTS =================")
+    print(f"Delay RMSE           : {avg_delay:.4f} µs")
+    print(f"Power RMSE           : {avg_power:.4f} dB")
+    print(f"Phase RMSE           : {avg_phase:.4f} degrees")
+    print(f"AoA Azimuth RMSE     : {avg_az:.4f} degrees")
+    print(f"AoA Elevation RMSE   : {avg_el:.4f} degrees")
+    print(f"Path Length RMSE     : {avg_path_length_rmse:.4f}")
+    print(f"Interaction Accuracy : {avg_interaction_accuracy:.4f}")
+    print(f"Interaction F1       : {avg_interaction_f1:.4f}")
+        
+    print(f"Delay MAE           : {avg_delay_mae:.4f} µs")
+    print(f"Power MAE           : {avg_power_mae:.4f} dB")
+    print(f"Phase MAE           : {avg_phase_mae:.4f} degrees")
+    print(f"AoA Azimuth MAE     : {avg_az_mae:.4f} degrees")
+    print(f"AoA Elevation MAE   : {avg_el_mae:.4f} degrees")
+    print(f"Path Length MAE     : {avg_path_length_mae:.4f}")
+    print("=====================================================\n")
+
+    if log_to_wandb:
+        wandb.run.summary["test_delay_rmse"] = avg_delay
+        wandb.run.summary["test_power_rmse"] = avg_power
+        wandb.run.summary["test_phase_circ_err"] = avg_phase
+        wandb.run.summary["test_path_length_rmse"] = avg_path_length_rmse
+        wandb.run.summary["test_interaction_accuracy"] = avg_interaction_accuracy
+        wandb.run.summary["test_interaction_f1"] = avg_interaction_f1
+        
+        wandb.run.summary["test_delay_mae"] = avg_delay_mae
+        wandb.run.summary["test_power_mae"] = avg_power_mae
+        wandb.run.summary["test_phase_circ_err_mae"] = avg_phase_mae
+        wandb.run.summary["test_path_length_mae"] = avg_path_length_mae
+
+    return (
+        avg_delay,
+        avg_power,
+        avg_phase,
+        avg_az,
+        avg_el,
+        avg_path_length_rmse,
+        avg_interaction_accuracy,
+        avg_interaction_f1,
+        avg_delay_mae,
+        avg_power_mae,
+        avg_phase_mae,
+        avg_az_mae,
+        avg_el_mae,
+        avg_path_length_mae,
+    )
+
+
+
+
+def show_example(model, val_loader, sample_index=0, k=25, plot=True, cluster_lookup_data=None):
+    model.eval()
+    batch = next(iter(val_loader))
+    prompts, paths, path_lengths, interactions = batch[0], batch[1], batch[2], batch[3]
+    path_padding_mask = batch[6] if len(batch) > 6 else None
+    
+    prompts = prompts.cuda()
+    paths = paths.cuda()
+    path_lengths = path_lengths.cuda()
+    device = next(model.parameters()).device
+    
+    cluster_center_std_b, cluster_pad_b = None, None
+    if cluster_lookup_data is not None:
+        prom_b = prompts[sample_index:sample_index+1]
+        cluster_center_std_b, cluster_pad_b = lookup_cluster_center_std_by_position(
+            prom_b, cluster_lookup_data, device
+        )
+    pred_paths, path_lengths_pred, inter_str_pred = generate_paths_no_env_batch(
+        model,
+        prompts[sample_index:sample_index+1],
+        max_steps=25,
+        cluster_center_std=cluster_center_std_b,
+        cluster_pad_mask=cluster_pad_b,
+    )
+    
+    pred = pred_paths[0]  # (T,3)
+    n_valid = int(round(path_lengths[sample_index].item() * 25))
+    gt = paths[sample_index][1:1 + n_valid, :3]  # Extract only 3D components (T,3)
+
+    print("\n--- Ground Truth Length {} ".format(len(gt)))
+
+    print("\n--- Model Predict Length (first {} paths) ---".format(path_lengths_pred.item()))
+    
+    
+    print(gt[:k])
+    print(pred[:k])
+
+    if plot:
+        T = min(len(gt), len(pred))
+        # print("len_path", len(pred), "actual = ", T)
+        pred = pred[:T]
+        gt = gt[:T]
+
+        fig, axs = plt.subplots(3,1, figsize=(10,12))
+
+        axs[0].plot(gt[:,0].cpu(), label="GT Delay", marker='o')
+        axs[0].plot(pred[:,0].cpu(), label="Pred Delay", marker='x')
+        axs[0].set_title("Path Delay (µs)")
+        axs[0].legend()
+
+        axs[1].plot(gt[:,1].cpu()*0.01, label="GT Power", marker='o')
+        axs[1].plot(pred[:,1].cpu()*0.01, label="Pred Power", marker='x')
+        axs[1].set_title("Path Power dB")
+        axs[1].legend()
+
+        axs[2].plot(gt[:,2].cpu()/(np.pi/180), label="GT Phase", marker='o')
+        axs[2].plot(pred[:,2].cpu()/(np.pi/180), label="Pred Phase", marker='x')
+        axs[2].set_title("Path Phase (degrees)")
+
+        axs[2].legend()
+
+        plt.tight_layout()
+        plt.show()
+
+
+# def evaluate_generation(val_loader, n_samples=3):
+#     model.eval()
+#     for i, (prompts, paths) in enumerate(val_loader):
+#         if i >= n_samples:
+#             break
+#         pred, path_lengths_pred = generate_paths_no_env(model, prompts[0])  # autoregressive generation
+#         print(f"path lengths pred: {path_lengths_pred[0]}")
+#         print(f"\nSample {i}")
+#         print("GT paths (first 5):")
+#         print(paths[0][:5])
+#         print("Predicted paths (first 5):")
+#         print(pred[0][:5])
+
+# # %%
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def infer_multiscenario_checkpoint_path(scenario_name, checkpoint_dir):
+    experiment = f"snoise_enc_direct_{scenario_name}_interacaction_all_inter_str_dec_all_repeat"
+    return os.path.join(checkpoint_dir, f"{experiment}_best_model_checkpoint.pth")
+
+
+def load_multiscenario_backbone(checkpoint_path, model_kwargs, map_location):
+    if not checkpoint_path or not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Pretrained checkpoint not found: {checkpoint_path}")
+    backbone = PathDecoder(**model_kwargs).to(map_location)
+    checkpoint = torch.load(checkpoint_path, map_location=map_location)
+    backbone.load_state_dict(checkpoint["model_state_dict"], strict=True)
+    print(f"Loaded multiscenario backbone from {checkpoint_path}")
+    return backbone, checkpoint
+
+
+class PathDecoderPrototypeResidualAdapter(nn.Module):
+    """
+    Pretrained PathDecoder backbone + zero-init residual branch conditioned on prototype memory.
+
+    The residual branch starts as an exact no-op, so the initial model matches the baseline checkpoint.
+    """
+
+    def __init__(
+        self,
+        backbone,
+        cluster_feature_dim,
+        hidden_dim,
+        n_heads=8,
+        cluster_encoder_layers=2,
+        freeze_backbone=True,
+    ):
+        super().__init__()
+        self.backbone = backbone
+        self.hidden_dim = hidden_dim
+        self.cluster_feature_dim = cluster_feature_dim
+        self.freeze_backbone = freeze_backbone
+        self.cluster_residual_adapter = True
+
+        if self.freeze_backbone:
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+
+        self.cluster_embed = nn.Sequential(
+            nn.Linear(cluster_feature_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+        )
+        self.cluster_pos_emb = nn.Embedding(self.backbone.max_T, hidden_dim)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=n_heads,
+            dim_feedforward=4 * hidden_dim,
+            batch_first=True,
+        )
+        self.cluster_encoder = nn.TransformerEncoder(encoder_layer, num_layers=cluster_encoder_layers)
+        self.query_norm = nn.LayerNorm(hidden_dim)
+        self.cross_attn = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
+        self.residual_mlp = nn.Sequential(
+            nn.Linear(2 * hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+        )
+        self.summary_proj = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+        )
+
+        self.delay_delta = nn.Linear(hidden_dim, 1)
+        self.power_delta = nn.Linear(hidden_dim, 1)
+        self.angle_delta = nn.Linear(hidden_dim, 6)
+        self.interaction_delta = nn.Linear(hidden_dim, 4)
+        self.pathcount_delta = nn.Sequential(
+            nn.Linear(self.backbone.prefix_len * hidden_dim + hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+        self.output_scale = nn.Parameter(torch.tensor(0.0))
+        self.pathcount_scale = nn.Parameter(torch.tensor(0.0))
+        self._zero_init_residual_heads()
+
+    def _zero_init_residual_heads(self):
+        modules = [
+            self.delay_delta,
+            self.power_delta,
+            self.angle_delta,
+            self.interaction_delta,
+        ]
+        for module in modules:
+            nn.init.zeros_(module.weight)
+            nn.init.zeros_(module.bias)
+        last_layer = self.pathcount_delta[-1]
+        nn.init.zeros_(last_layer.weight)
+        nn.init.zeros_(last_layer.bias)
+
+    def train(self, mode=True):
+        super().train(mode)
+        if self.freeze_backbone:
+            self.backbone.eval()
+        return self
+
+    def _encode_cluster_memory(self, cluster_center_std, cluster_pad_mask, batch_size, device, dtype):
+        if cluster_center_std is None:
+            cluster_tokens = torch.zeros(batch_size, 0, self.hidden_dim, device=device, dtype=dtype)
+            cluster_pad_mask = torch.zeros(batch_size, 0, dtype=torch.bool, device=device)
+            return cluster_tokens, cluster_pad_mask
+
+        cluster_tokens = self.cluster_embed(cluster_center_std.to(device=device, dtype=dtype))
+        if cluster_pad_mask is None:
+            cluster_pad_mask = torch.zeros(
+                batch_size,
+                cluster_tokens.size(1),
+                dtype=torch.bool,
+                device=device,
+            )
+        else:
+            cluster_pad_mask = cluster_pad_mask.to(device=device, dtype=torch.bool)
+
+        if cluster_tokens.size(1) > 0:
+            pos = self.cluster_pos_emb(torch.arange(cluster_tokens.size(1), device=device)).unsqueeze(0)
+            cluster_tokens = cluster_tokens + pos
+            safe_pad_mask = cluster_pad_mask.clone()
+            all_padded = safe_pad_mask.all(dim=1)
+            if safe_pad_mask.size(1) > 0:
+                safe_pad_mask[all_padded, 0] = False
+                cluster_tokens[all_padded] = 0.0
+            cluster_tokens = self.cluster_encoder(cluster_tokens, src_key_padding_mask=safe_pad_mask)
+        return cluster_tokens, cluster_pad_mask
+
+    def forward(self, prompts, paths, interactions, cluster_center_std=None, cluster_pad_mask=None):
+        batch_size, time_steps, _ = paths.shape
+        h_paths, prefix_flat = self.backbone.forward_hidden(prompts, paths, interactions)
+
+        base_delay = self.backbone.out_delay(h_paths).squeeze(-1)
+        base_power = self.backbone.out_power(h_paths).squeeze(-1)
+        base_raw = self.backbone.out(h_paths)
+        base_phase_sin = base_raw[:, :, 0]
+        base_phase_cos = base_raw[:, :, 1]
+        base_az_sin = base_raw[:, :, 2]
+        base_az_cos = base_raw[:, :, 3]
+        base_el_sin = base_raw[:, :, 4]
+        base_el_cos = base_raw[:, :, 5]
+        base_interaction = self.backbone.interaction_head(h_paths)
+        base_pathcount = self.backbone.pathcount_head(prefix_flat)
+
+        cluster_tokens, cluster_pad_mask = self._encode_cluster_memory(
+            cluster_center_std,
+            cluster_pad_mask,
+            batch_size=batch_size,
+            device=h_paths.device,
+            dtype=h_paths.dtype,
+        )
+
+        if cluster_tokens.size(1) == 0:
+            context = torch.zeros_like(h_paths)
+            cluster_summary = torch.zeros(batch_size, self.hidden_dim, device=h_paths.device, dtype=h_paths.dtype)
+        else:
+            context, _ = self.cross_attn(
+                self.query_norm(h_paths),
+                cluster_tokens,
+                cluster_tokens,
+                key_padding_mask=cluster_pad_mask,
+                need_weights=False,
+            )
+            valid = (~cluster_pad_mask).float().unsqueeze(-1)
+            cluster_summary = (cluster_tokens * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1.0)
+
+        fused = torch.cat([h_paths, context], dim=-1)
+        residual_hidden = self.residual_mlp(fused)
+        residual_scale = torch.tanh(self.output_scale)
+
+        delay_pred = base_delay + residual_scale * self.delay_delta(residual_hidden).squeeze(-1)
+        power_pred = base_power + residual_scale * self.power_delta(residual_hidden).squeeze(-1)
+
+        angle_delta = self.angle_delta(residual_hidden)
+        phase_sin_pred = base_phase_sin + residual_scale * angle_delta[:, :, 0]
+        phase_cos_pred = base_phase_cos + residual_scale * angle_delta[:, :, 1]
+        az_sin_pred = base_az_sin + residual_scale * angle_delta[:, :, 2]
+        az_cos_pred = base_az_cos + residual_scale * angle_delta[:, :, 3]
+        el_sin_pred = base_el_sin + residual_scale * angle_delta[:, :, 4]
+        el_cos_pred = base_el_cos + residual_scale * angle_delta[:, :, 5]
+
+        interaction_logits = base_interaction + residual_scale * self.interaction_delta(residual_hidden)
+
+        pathcount_scale = torch.tanh(self.pathcount_scale)
+        pathcount_context = torch.cat([prefix_flat, self.summary_proj(cluster_summary)], dim=-1)
+        pathcounts = base_pathcount + pathcount_scale * self.pathcount_delta(pathcount_context)
+
+        phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)
+        az_pred = torch.atan2(az_sin_pred, az_cos_pred)
+        el_pred = torch.atan2(el_sin_pred, el_cos_pred)
+
+        return (
+            delay_pred,
+            power_pred,
+            phase_sin_pred,
+            phase_cos_pred,
+            phase_pred,
+            az_sin_pred,
+            az_cos_pred,
+            az_pred,
+            el_sin_pred,
+            el_cos_pred,
+            el_pred,
+            pathcounts,
+            interaction_logits,
+        )
+
+
+class PathDecoderClusterMLPHead(nn.Module):
+    """
+    Frozen PathDecoder backbone + MLP head that takes (hidden_state, cluster_embedding) per step.
+    Load a checkpoint from multiscenario_direct_training (no clusters), freeze backbone, train only this head.
+    """
+    def __init__(self, backbone, hidden_dim, n_clusters=4, max_path_len_clusters=26):
+        super().__init__()
+        self.backbone = backbone
+        self.hidden_dim = hidden_dim
+        self.n_clusters = n_clusters
+        self.max_path_len_clusters = max_path_len_clusters
+        for p in self.backbone.parameters():
+            p.requires_grad = False
+        self.cluster_embed = nn.Linear(1, hidden_dim)
+        head_in = hidden_dim * 2
+        self.out_delay = nn.Linear(head_in, 1)
+        self.out_power = nn.Linear(head_in, 1)
+        self.out = nn.Sequential(
+            nn.Linear(head_in, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 6),
+        )
+        self.interaction_head = nn.Linear(head_in, 4)
+        self.cluster_mlp_head = True
+
+    def forward(self, prompts, paths, interactions, cluster_emb=None, cluster_pad_mask=None):
+        B, T, _ = paths.shape
+        h_paths, prefix_flat = self.backbone.forward_hidden(prompts, paths, interactions)
+        if cluster_emb is None:
+            cluster_emb = torch.zeros(B, T, self.hidden_dim, device=h_paths.device, dtype=h_paths.dtype)
+        else:
+            if cluster_emb.shape[-1] == 1:
+                cluster_emb = self.cluster_embed(cluster_emb)
+            if cluster_emb.shape[1] != T:
+                if cluster_emb.shape[1] < T:
+                    pad = torch.zeros(B, T - cluster_emb.shape[1], self.hidden_dim, device=cluster_emb.device, dtype=cluster_emb.dtype)
+                    cluster_emb = torch.cat([cluster_emb, pad], dim=1)
+                else:
+                    cluster_emb = cluster_emb[:, :T]
+        concat = torch.cat([h_paths, cluster_emb], dim=-1)
+        delay_pred = self.out_delay(concat).squeeze(-1)
+        power_pred = self.out_power(concat).squeeze(-1)
+        out = self.out(concat)
+        phase_sin_pred = out[:, :, 0]
+        phase_cos_pred = out[:, :, 1]
+        phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)
+        az_sin_pred = out[:, :, 2]
+        az_cos_pred = out[:, :, 3]
+        el_sin_pred = out[:, :, 4]
+        el_cos_pred = out[:, :, 5]
+        az_pred = torch.atan2(az_sin_pred, az_cos_pred)
+        el_pred = torch.atan2(el_sin_pred, el_cos_pred)
+        interaction_logits = self.interaction_head(concat)
+        path_length_pred = self.backbone.pathcount_head(prefix_flat)
+        return (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                path_length_pred, interaction_logits)
+
+
+def compute_average_validation_loss(model, val_loader, config, train_data, task=None, cluster_lookup_data=None):
+    device = next(model.parameters()).device
+    model.eval()
+    val_losses = []
+
+    with torch.no_grad():
+        pbar = tqdm(val_loader, desc="Initial baseline [Val]", leave=False)
+        for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:
+            prompts = prompts.cuda()
+            paths = paths.cuda()
+            path_lengths = path_lengths.cuda()
+            interactions = interactions.cuda()
+            path_padding_mask = path_padding_mask.cuda()
+
+            cluster_center_std, cluster_pad_mask = None, None
+            if cluster_lookup_data is not None:
+                cluster_center_std, cluster_pad_mask = lookup_cluster_center_std_by_position(
+                    prompts, cluster_lookup_data, device
+                )
+
+            paths_in = paths[:, :-1, :]
+            interactions_in = interactions[:, :-1, :]
+            paths_out = paths[:, 1:, :]
+            interactions_out = interactions[:, 1:, :]
+
+            if hasattr(model, "cluster_mlp_head"):
+                outputs = model(
+                    prompts,
+                    paths_in,
+                    interactions_in,
+                    cluster_emb=cluster_center_std,
+                    cluster_pad_mask=cluster_pad_mask,
+                )
+            elif hasattr(model, "cluster_residual_adapter") or hasattr(model, "cluster_to_prompt"):
+                outputs = model(
+                    prompts,
+                    paths_in,
+                    interactions_in,
+                    cluster_center_std=cluster_center_std,
+                    cluster_pad_mask=cluster_pad_mask,
+                )
+            else:
+                outputs = model(prompts, paths_in, interactions_in)
+
+            (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+             az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+             path_length_pred, interaction_logits) = outputs
+
+            (total_loss, _, _, _, _, _, _, _, _) = masked_loss(
+                delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                path_length_pred, interaction_logits, paths_out, path_lengths,
+                interactions_out, finetune=task, pad_value=train_data.pad_value,
+                interaction_weight=config.get("interaction_weight", 0.1),
+                delay_only=config.get("delay_only_loss", False),
+                path_padding_mask=path_padding_mask,
+            )
+            val_losses.append(total_loss.item())
+            pbar.set_postfix({"val_loss": f"{total_loss.item():.4f}"})
+
+    return float(np.mean(val_losses)) if val_losses else float("inf")
+
+
+def train_with_interactions(model, train_loader, val_loader, config, train_data, task=None, cluster_lookup_data=None):
+    """
+    cluster_lookup_data: sequence-level prototype lookup used for NN retrieval by prompt RX position.
+    """
+    device = next(model.parameters()).device
+    best_val_loss = float(config.get("initial_best_val_loss", float("inf")))
+
+
+    for epoch in range(config["epochs"]):
+        # -------------------- TRAINING --------------------
+        model.train()
+        train_losses = []
+        train_loss_delay = []
+        train_loss_power = []
+        train_loss_phase = []
+        train_loss_path_length = []
+        train_loss_interaction = []  # NEW
+        train_path_length_rmse = []
+        train_loss_az = []
+        train_loss_el = []
+        train_ch_nmse = []
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False)
+        for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:
+            prompts = prompts.cuda()
+            paths = paths.cuda()
+            path_lengths = path_lengths.cuda()
+            interactions = interactions.cuda()
+            path_padding_mask = path_padding_mask.cuda()
+            cluster_center_std, cluster_pad_mask = None, None
+            if cluster_lookup_data is not None:
+                cluster_center_std, cluster_pad_mask = lookup_cluster_center_std_by_position(
+                    prompts, cluster_lookup_data, device
+                )
+
+            paths_in = paths[:, :-1, :]
+            p_noise = config.get("TARGET_NOISE_PROB", 0.0)
+            if p_noise > 0:
+                paths_in = add_noise_to_paths(paths_in, path_padding_mask[:, :-1], p_noise=p_noise,
+                                              noise_params=config.get("TARGET_NOISE_PARAMS"))
+            interactions_in = interactions[:, :-1, :]
+
+            paths_out = paths[:, 1:, :]
+            interactions_out = interactions[:, 1:, :]
+
+            if hasattr(model, "cluster_mlp_head"):
+                (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                 az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                 path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in,
+                                                              cluster_emb=cluster_center_std, cluster_pad_mask=cluster_pad_mask)
+            elif hasattr(model, "cluster_residual_adapter") or hasattr(model, "cluster_to_prompt"):
+                (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                 az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                 path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in,
+                                                              cluster_center_std=cluster_center_std, cluster_pad_mask=cluster_pad_mask)
+            else:
+                (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                 az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                 path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
+
+            (total_loss, loss_delay, loss_power, loss_phase,
+             loss_az, loss_el, loss_path_length, loss_interaction,loss_channel) = masked_loss(
+                delay_pred, power_pred, phase_sin_pred, phase_cos_pred,phase_pred,
+                az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred,el_pred,
+                path_length_pred, interaction_logits, paths_out, path_lengths,
+                interactions_out, finetune=task, pad_value=train_data.pad_value,
+                interaction_weight=config.get("interaction_weight", 0.1),
+                delay_only=config.get("delay_only_loss", False),
+                path_padding_mask=path_padding_mask
+            )
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
+            path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1), 
+                                                    path_lengths)
+            ch_nmse = 0
+            if epoch >= 0:
+                pass
+                # pred_power_linear = 10**( ((power_pred.cpu().detach().numpy())/0.01)/10)
+                # pred_delay_secs = delay_pred.cpu().detach().numpy()/ 1e6
+
+
+                # delay_t = paths_out[:, :, 0].cpu().detach().numpy()
+                # power_t = paths_out[:, :, 1].cpu().detach().numpy()
+                # phase = paths_out[:, :, 2].cpu().detach().numpy()
+                # az = paths_out[:, :, 3].cpu().detach().numpy()
+                # el = paths_out[:, :, 4].cpu().detach().numpy()
+                # power_linear = 10**( (power_t/0.01)/10)
+                # delay_secs = delay_t/ 1e6
+
+                # predicted_channels = mycomputer.compute_channels(pred_power_linear,pred_delay_secs, phase_pred.cpu().detach().numpy(), az_pred.cpu().detach().numpy(), el_pred.cpu().detach().numpy(),kwargs=None  )
+                # gt_channels = mycomputer.compute_channels(power_linear,delay_secs, phase, az, el ,kwargs=None )
+   
+
+
+                # ch_nmse = compute_channel_nmse(predicted_channels, gt_channels)
+            train_ch_nmse.append(ch_nmse)
+            train_losses.append(total_loss.item())
+            train_loss_delay.append(loss_delay.item())
+            train_loss_power.append(loss_power.item())
+            train_loss_phase.append(loss_phase.item())
+            train_loss_path_length.append(loss_path_length.item())
+            # track aoa losses
+            # if 'train_loss_az' not in locals():
+            #     train_loss_az = []
+            #     train_loss_el = []
+            train_loss_az.append(loss_az.item())
+            train_loss_el.append(loss_el.item())
+            train_loss_interaction.append(loss_interaction.item())  # NEW
+            train_path_length_rmse.append(path_length_rmse)
+            current_lr = optimizer.param_groups[0]["lr"]
+            pbar.set_postfix({
+                "loss": f"{total_loss.item():.4f}",
+                "delay": f"{loss_delay.item():.4f}",
+                
+                "power": f"{loss_power.item():.4f}",
+                "phase": f"{loss_phase.item():.4f}",
+                "az": f"{loss_az.item():.4f}",
+                "el": f"{loss_el.item():.4f}",
+                "inter": f"{loss_interaction.item():.4f}",  # NEW
+                "path_rmse": f"{path_length_rmse:.4f}",
+                "ch_nmse":f"{ch_nmse:.4f}",
+                "lr": f"{current_lr:.2e}"
+            })
+        scheduler.step()
+        try:
+            attn = getattr(model.decoder.layers[-1], "cross_attn_weights", None) if hasattr(model, "decoder") else None
+        except Exception:
+            attn = None
+        # print("Train delay_pred->",delay_pred[0])
+        # print("Train actual->",paths_out[0, :, 0])
+        avg_train_loss = np.mean(train_losses)
+        avg_train_delay = np.mean(train_loss_delay)
+        avg_train_power = np.mean(train_loss_power)
+        avg_train_phase = np.mean(train_loss_phase)
+        avg_train_az = np.mean(train_loss_az) 
+        avg_train_el = np.mean(train_loss_el)
+        avg_train_path_length = np.mean(train_loss_path_length)
+        avg_train_interaction = np.mean(train_loss_interaction)  # NEW
+        avg_train_path_length_rmse = np.mean(train_path_length_rmse)
+
+        # -------------------- VALIDATION --------------------
+        model.eval()
+        val_losses = []
+        val_loss_delay = []
+        val_loss_power = []
+        val_loss_phase = []
+        val_loss_path_length = []
+        val_loss_interaction = []  # NEW
+        val_path_length_rmse = []
+        val_loss_az = []
+        val_loss_el = []
+
+        with torch.no_grad():
+            pbar = tqdm(val_loader, desc=f"Epoch {epoch} [Val]", leave=False)
+            # prepare val aoa loss lists
+
+            for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:
+                prompts = prompts.cuda()
+                paths = paths.cuda()
+                path_lengths = path_lengths.cuda()
+                interactions = interactions.cuda()
+                path_padding_mask = path_padding_mask.cuda()
+                cluster_center_std, cluster_pad_mask = None, None
+                if cluster_lookup_data is not None:
+                    cluster_center_std, cluster_pad_mask = lookup_cluster_center_std_by_position(
+                        prompts, cluster_lookup_data, device
+                    )
+
+                paths_in = paths[:, :-1, :]
+                interactions_in = interactions[:, :-1, :]
+
+                paths_out = paths[:, 1:, :]
+                interactions_out = interactions[:, 1:, :]
+
+                if hasattr(model, "cluster_mlp_head"):
+                    (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                     az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                     path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in,
+                                                                  cluster_emb=cluster_center_std, cluster_pad_mask=cluster_pad_mask)
+                elif hasattr(model, "cluster_residual_adapter") or hasattr(model, "cluster_to_prompt"):
+                    (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                     az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                     path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in,
+                                                                  cluster_center_std=cluster_center_std, cluster_pad_mask=cluster_pad_mask)
+                else:
+                    (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                     az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                     path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
+                
+                try:
+                    if hasattr(model, "decoder") and hasattr(model.decoder, "layers"):
+                        attn = getattr(model.decoder.layers[-1], "cross_attn_weights", None)
+                    elif hasattr(model, "backbone") and hasattr(model.backbone, "decoder"):
+                        attn = getattr(model.backbone.decoder.layers[-1], "cross_attn_weights", None)
+                    else:
+                        attn = None
+                except Exception:
+                    attn = None
+
+                (total_loss, loss_delay, loss_power, loss_phase,
+                loss_az, loss_el, loss_path_length, loss_interaction,loss_channel) = masked_loss(
+                    delay_pred, power_pred, phase_sin_pred, phase_cos_pred,phase_pred,
+                    az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred,el_pred,
+                    path_length_pred, interaction_logits, paths_out, path_lengths,
+                    interactions_out, finetune=task, pad_value=train_data.pad_value,
+                    interaction_weight=config.get("interaction_weight", 0.1),
+                    delay_only=config.get("delay_only_loss", False),
+                    path_padding_mask=path_padding_mask
+                )
+
+                path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1), 
+                                                       path_lengths)
+
+                val_losses.append(total_loss.item())
+                val_loss_delay.append(loss_delay.item())
+                val_loss_power.append(loss_power.item())
+                val_loss_phase.append(loss_phase.item())
+                val_loss_az.append(loss_az.item())
+                val_loss_el.append(loss_el.item())
+                val_loss_path_length.append(loss_path_length.item())
+                val_loss_interaction.append(loss_interaction.item())  # NEW
+                val_path_length_rmse.append(path_length_rmse)
+
+                pbar.set_postfix({
+                    "val_loss": f"{total_loss.item():.4f}",
+                    "inter": f"{loss_interaction.item():.4f}",  # NEW
+                })
+        # print("Val delay_pred->",delay_pred[0])
+        # print("Val actual->",paths_out[0, :, 0])
+
+        
+        # print("val attn->",attn[0, 1,])
+        avg_val_loss = np.mean(val_losses)
+        avg_val_delay = np.mean(val_loss_delay)
+        avg_val_power = np.mean(val_loss_power)
+        avg_val_phase = np.mean(val_loss_phase)
+        avg_val_az = np.mean(val_loss_az) 
+        avg_val_el = np.mean(val_loss_el)
+        avg_val_path_length = np.mean(val_loss_path_length)
+        avg_val_interaction = np.mean(val_loss_interaction)  # NEW
+        avg_val_path_length_rmse = np.mean(val_path_length_rmse)
+
+        # scheduler.step(avg_val_loss)
+        current_lr = optimizer.param_groups[0]["lr"]
+
+        # -------------------- CHECKPOINT SAVING --------------------
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_val_loss': torch.tensor(best_val_loss),
+            }, checkpoint_path)
+            print(f"  ✓ Best checkpoint saved (val_loss: {best_val_loss:.4f})")
+
+        if config.get("USE_WANDB", False):
+            import wandb
+            wandb.log({
+                "train_loss": avg_train_loss,
+                "train_loss_delay": avg_train_delay,
+                "train_loss_power": avg_train_power,
+                "train_loss_phase": avg_train_phase,
+                "train_loss_az": avg_train_az,
+                "train_loss_el": avg_train_el,
+                "train_loss_path_length": avg_train_path_length,
+                "train_loss_interaction": avg_train_interaction,  # NEW
+                "train_path_length_rmse": avg_train_path_length_rmse,
+
+                "val_loss": avg_val_loss,
+                "val_loss_delay": avg_val_delay,
+                "val_loss_power": avg_val_power,
+                "val_loss_phase": avg_val_phase,
+                "val_loss_az": avg_val_az,
+                "val_loss_el": avg_val_el,
+                "val_loss_path_length": avg_val_path_length,
+                "val_loss_interaction": avg_val_interaction,  # NEW
+                "val_path_length_rmse": avg_val_path_length_rmse,
+                "epoch": epoch,
+                "lr": current_lr,
+            })
+
+        print(f"\nEpoch {epoch:02d}")
+        print(f"  Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        print(f"    Delay: {avg_train_delay:.4f} (val: {avg_val_delay:.4f})")
+        print(f"    Power: {avg_train_power:.4f} (val: {avg_val_power:.4f})")
+        print(f"    Phase: {avg_train_phase:.4f} (val: {avg_val_phase:.4f})")
+        print(f"    Az: {avg_train_az:.4f} (val: {avg_val_az:.4f})")
+        print(f"    El: {avg_train_el:.4f} (val: {avg_val_el:.4f})")
+
+        print(f"    Interaction: {avg_train_interaction:.4f} (val: {avg_val_interaction:.4f})")  # NEW
+        print(f"    PathLength: {avg_train_path_length:.4f} (val: {avg_val_path_length:.4f})")  # NEW
+
+        print(f"  LR: {current_lr:.3e}")
+
+# model = PathDecoder().to(device)
+
+
+
+
+# %%
+if config["USE_WANDB"]:
+    import wandb
+
+    wandb.init(
+        project="deepmimo-path-decoder",
+        config = config
+        # config={
+        #     "batch_size": train_loader.batch_size,
+        #     "split_type": train_data.split_by,
+        # }
+    )
+
+
+
+
+
+# %%
+
+
+# %%
+all_scenarios = [scenario]
+
+for scenario in all_scenarios:
+# %%
+    dataset = dm.load(scenario, )
+    print(f"######### Training on Scenario {scenario}  #########")
+    config = {
+        "BATCH_SIZE": 128,
+        "PAD_VALUE": 0,
+        "USE_WANDB": False,
+        "LR": 1e-4,
+        "epochs": 200,
+        "interaction_weight": 0.01,
+        "experiment": f"noise_std_fix3_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
+        "hidden_dim": 512,
+        "n_layers": 8,
+        "n_heads": 8,
+        "use_cluster_conditioning": True,
+        "n_clusters": 5,
+        "max_path_len_clusters": 25,
+        "cluster_features": ["delay", "power"],
+        "sequence_prototype_hidden_dim": 128,
+        "sequence_prototype_latent_dim": 96,
+        "sequence_prototype_epochs": 20,
+        "sequence_prototype_batch_size": 256,
+        "sequence_prototype_lr": 1e-3,
+        "delay_only_loss": False,
+        "TARGET_NOISE_PROB": 0.2,
+        "TARGET_NOISE_PARAMS": None,
+        "use_cluster_mlp_head": False,
+        "freeze_backbone": True,
+        "residual_adapter_heads": 8,
+        "residual_adapter_layers": 2,
+        "residual_adapter_weight_decay": 1e-4,
+        "pretrained_checkpoint": args.pretrained_checkpoint,
+    }
+
+    train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power", pad_value=config["PAD_VALUE"], normalizers=None, apply_normalizers=[])
+    val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power", pad_value=config["PAD_VALUE"], normalizers=None, apply_normalizers=[])
+
+    n_clusters = config.get("n_clusters", 4)
+    max_path_len_clusters = config.get("max_path_len_clusters", 26)
+    cluster_lookup_data = None
+
+    base_model_kwargs = dict(
+        prompt_dim=6,
+        hidden_dim=config["hidden_dim"],
+        n_layers=config["n_layers"],
+        n_heads=config["n_heads"],
+        pad_value=config["PAD_VALUE"],
+    )
+    pretrained_checkpoint_path = config.get("pretrained_checkpoint") or infer_multiscenario_checkpoint_path(
+        scenario,
+        args.pretrained_checkpoint_dir,
+    )
+
+    if config.get("use_cluster_conditioning", True):
+        backbone, _ = load_multiscenario_backbone(
+            pretrained_checkpoint_path,
+            base_model_kwargs,
+            map_location=device,
+        )
+        model = PathDecoderPrototypeResidualAdapter(
+            backbone=backbone,
+            cluster_feature_dim=2 * len(config.get("cluster_features", ["delay", "power"])),
+            hidden_dim=config["hidden_dim"],
+            n_heads=config.get("residual_adapter_heads", config["n_heads"]),
+            cluster_encoder_layers=config.get("residual_adapter_layers", 2),
+            freeze_backbone=config.get("freeze_backbone", True),
+        ).to(device)
+        cluster_lookup_data = build_sequence_prototype_lookup(
+            train_data,
+            feature_keys=config.get("cluster_features", ["delay", "power"]),
+            device=device,
+            max_path_len=max_path_len_clusters,
+            n_clusters=n_clusters,
+            proto_hidden_dim=config.get("sequence_prototype_hidden_dim", 128),
+            proto_latent_dim=config.get("sequence_prototype_latent_dim", 96),
+            proto_epochs=config.get("sequence_prototype_epochs", 20),
+            proto_batch_size=config.get("sequence_prototype_batch_size", 256),
+            proto_lr=config.get("sequence_prototype_lr", 1e-3),
+        )
+        print(f"Prepared sequence prototype lookup for features={config.get('cluster_features', ['delay', 'power'])}")
+    elif config.get("use_cluster_mlp_head", False):
+        backbone, _ = load_multiscenario_backbone(
+            pretrained_checkpoint_path,
+            base_model_kwargs,
+            map_location=device,
+        )
+        model = PathDecoderClusterMLPHead(backbone, config["hidden_dim"], n_clusters=n_clusters, max_path_len_clusters=max_path_len_clusters).to(device)
+    else:
+        model, _ = load_multiscenario_backbone(
+            pretrained_checkpoint_path,
+            base_model_kwargs,
+            map_location=device,
+        )
+    print("Total trainable parameters:", count_parameters(model))
+    # print(f"train_tx_idx: {train_tx_idx.shape} {train_tx_idx[:6]}")
+    # print(f"train_rx_pos: {train_rx_pos.shape} {train_rx_pos[:6]}")
+    # print(f"train_valid_len: {train_valid_len.shape} {train_valid_len.max()}")
+    # print(f"train_step_means: {train_step_means.shape} {train_step_means[0].T}")
+
+    optimizer = torch.optim.AdamW(
+        (p for p in model.parameters() if p.requires_grad),
+        lr=config["LR"],
+        weight_decay=config.get("residual_adapter_weight_decay", 1e-4),
+    )
+    # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=2, mode="min")
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, 
+        T_0=25,      # Restart every 10 epochs
+        T_mult=1,    # Double the period after each restart
+        eta_min=1e-8 # Minimum LR
+    )
+
+    # Initialize best checkpoint tracking (based on path_length loss)
+
+    # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=2, mode="min")
+
+    checkpoint_path = f"{config['experiment']}_best_model_checkpoint.pth"
+    os.makedirs(args.checkpoint_dir, exist_ok=True)
+    checkpoint_path = os.path.join(args.checkpoint_dir, checkpoint_path)
+
+    train_loader = torch.utils.data.DataLoader(
+        dataset     = train_data,
+        batch_size  = config['BATCH_SIZE'],
+        shuffle     = True,
+        collate_fn= train_data.collate_fn
+        )
+    val_loader = torch.utils.data.DataLoader(
+        dataset     = val_data,
+        batch_size  = config['BATCH_SIZE'],
+        shuffle     = False,
+        collate_fn= val_data.collate_fn
+        )
+
+    initial_best_val_loss = compute_average_validation_loss(
+        model,
+        val_loader,
+        config,
+        train_data,
+        cluster_lookup_data=cluster_lookup_data,
+    )
+    config["initial_best_val_loss"] = initial_best_val_loss
+    torch.save({
+        'epoch': -1,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'best_val_loss': torch.tensor(initial_best_val_loss),
+    }, checkpoint_path)
+    print(f"Saved baseline-aligned starting checkpoint (val_loss: {initial_best_val_loss:.4f})")
+
+    # Train
+    train_with_interactions(model, train_loader, val_loader, config, train_data, cluster_lookup_data=cluster_lookup_data)
+    
+    # %% [markdown]
+    # 
+    # evaluate_generation(train_loader)
+    # 
+
+    # %%
+    def load_best_checkpoint(model, checkpoint_path="checkpoints2/best_model_checkpoint.pth"):
+        """
+        Load the best model checkpoint saved during training.
+        
+        Args:
+            model: The model instance to load the checkpoint into
+            checkpoint_path: Path to the checkpoint file
+        
+        Returns:
+            epoch: Epoch at which best checkpoint was saved
+            best_val_loss: Best validation loss achieved
+        """
+        if not os.path.exists(checkpoint_path):
+            print(f"Warning: Checkpoint not found at {checkpoint_path}")
+            return None, None
+        
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        epoch = checkpoint['epoch']
+        best_avg_val_loss = checkpoint['best_val_loss']
+        
+        print(f"✓ Loaded best checkpoint from epoch {epoch} (val_loss: {best_avg_val_loss:.4f})")
+        return epoch, best_avg_val_loss
+    # torch.serialization.add_safe_globals([np._core.multiarray.scalar])
+    # torch.serialization.add_safe_globals([np.dtype])
+
+    # Load best checkpoint for inference/evaluation
+    best_epoch, best_loss = load_best_checkpoint(model, checkpoint_path=checkpoint_path)
+
+    # %%
+    checkpoint_path
+
+    # %%
+    results = evaluate_model(model, val_loader, pad_value=config["PAD_VALUE"], data_stats=None,
+                             cluster_lookup_data=cluster_lookup_data)
+    # print(results)
+    avg_delay, avg_power, avg_phase, avg_az, avg_el, avg_path_length_rmse, avg_interaction_accuracy, avg_interaction_f1, avg_delay_mae, avg_power_mae, avg_phase_mae, avg_az_mae, avg_el_mae, avg_path_length_mae  = results
+    # (avg_delay, avg_power, avg_phase, avg_path_length_rmse, 
+    #  avg_delay_mae, avg_power_mae, avg_phase_mae, avg_path_length_mae) = results
+    scenario_row = {
+            "scenario": scenario,
+            "delay_rmse": avg_delay,
+            "power_rmse": avg_power,
+            "phase_rmse": avg_phase,
+            "az_rmse": avg_az,
+            "el_rmse": avg_el,
+            "phase_rmse": avg_phase,
+            "path_length_rmse": avg_path_length_rmse,
+            "interaction_accuracy": avg_interaction_accuracy,
+            "interaction_f1": avg_interaction_f1,
+            "delay_mae": avg_delay_mae,
+            "power_mae": avg_power_mae,
+            "phase_mae": avg_phase_mae,
+            "avg_az_mae": avg_az_mae,
+            "avg_el_mae": avg_el_mae,
+            "path_length_mae": avg_path_length_mae,
+            "best_val_loss": best_loss.item() if hasattr(best_loss, 'item') else best_loss
+        }
+
+        # 4. Append to CSV
+    df = pd.DataFrame([scenario_row])
+    # header=not os.path.exists(...) ensures the header is only written once
+    df.to_csv(csv_log_file, mode='a', index=False, header=not os.path.exists(csv_log_file))
+
+    print(f"✓ Results for {scenario} saved to {csv_log_file}")
+    del dataset, train_loader, val_loader, model
+
+
+    # %%
+    # show_example(model, val_loader, sample_index=24)
+
+
+
+
+
+# %%
+best_epoch, best_loss = load_best_checkpoint(model, checkpoint_path=checkpoint_path)
+
+# %%
+checkpoint_path
+
+# %%
+results = evaluate_model(model, val_loader, pad_value=config["PAD_VALUE"], data_stats=None,
+                            cluster_lookup_data=cluster_lookup_data)
+
+# %%
+
+
+# %%
+
+
+
+# %%
+
+
+# %%

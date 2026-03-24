@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+import argparse
 import os
 import torch
 from tqdm import tqdm
@@ -36,6 +37,7 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 from models import PathDecoder, GPTPathDecoder
 from dataset.dataloaders import PreTrainMySeqDataLoader
 from utils.utils import *
+# from utils.loss_experiments import masked_loss_topk_weighted
 
 from tqdm import tqdm
 import torch
@@ -44,80 +46,6 @@ import pandas as pd
 import os
 
 csv_log_file = "weighted_final_scenario_results.csv"
-
-# %%
-scenario = 'city_89_nairobi_3p5'
-# scenario = 'city_0_newyork_3p5'
-
-dm.download(scenario)
-dataset = dm.load(scenario, )
-
-# %%
-dataset.scene.plot()
-
-
-# %%
-dm.info()
-
-
-# %%
-config = {
-    "BATCH_SIZE":128,
-    "PAD_VALUE": 0,
-    "USE_WANDB": False,
-    "LR":2e-5,
-    "epochs" : 100,
-    "interaction_weight": 0.01,  # Weight for interaction loss
-    "experiment": f"{scenario}_interacaction_all_inter_str_dec_all_repeat",
-    "hidden_dim": 512,
-    "n_layers": 8,
-    "n_heads": 8,
-    # Target noise for generalization
-    "TARGET_NOISE_PROB": 0.2,
-    "TARGET_NOISE_PARAMS": None,  # None = defaults; or e.g. {"delay": {"mean": 0, "std": 0.05}, "power": {"mean": 0, "std": 0.002}, ...}
-    # Weight path loss by (1/2)**n over time steps (earlier steps weighted more)
-    "time_step_weighted": False,
-}
-
-
-
-
-# %%
-
-
-
-# %%
-
-
-# %%
-train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
-
-train_loader = torch.utils.data.DataLoader(
-    dataset     = train_data,
-    batch_size  = config['BATCH_SIZE'],
-    shuffle     = True,
-    collate_fn= train_data.collate_fn
-    )
-val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power")
-val_loader = torch.utils.data.DataLoader(
-    dataset     = val_data,
-    batch_size  = config['BATCH_SIZE'],
-    shuffle     = False,
-    collate_fn= val_data.collate_fn
-    )
-
-for item in train_loader:
-    print(f"Prompt shape: {item[0].shape}, Paths shape: {item[1].shape}, Num paths shape: {item[2].shape}")
-    
-    break
-
-
-# %%
-print("No. of Train Points   : ", train_data.__len__())
-print("Batch Size           : ", config["BATCH_SIZE"])
-print("Train Batches        : ", train_loader.__len__())
-print("No. of Train Points   : ", val_data.__len__())
-print("Val Batches          : ", val_loader.__len__())
 
 def compute_stop_metrics(path_count, targets, pad_value=0):
     """
@@ -496,7 +424,17 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def train_with_interactions(model, train_loader, val_loader, config, train_data, task=None):
+def train_with_interactions(
+    model,
+    train_loader,
+    val_loader,
+    config,
+    train_data,
+    optimizer,
+    scheduler,
+    checkpoint_path,
+    task=None,
+):
     """
     Modified training loop with interaction prediction.
     """
@@ -551,6 +489,20 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                 path_padding_mask=path_padding_mask,
                 time_step_weighted=config.get("time_step_weighted", False)
             )
+            # (total_loss, loss_delay, loss_power, loss_phase,
+            # loss_az, loss_el, loss_path_length, loss_interaction, loss_channel) = masked_loss_topk_weighted(
+            #     delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+            #     az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+            #     path_length_pred, interaction_logits, paths_out, path_lengths,
+            #     interactions_out,
+            #     finetune=task,
+            #     pad_value=train_data.pad_value,
+            #     interaction_weight=config.get("interaction_weight", 0.1),
+            #     path_padding_mask=path_padding_mask,
+            #     top_k=5,
+            #     weighting_mode="explicit",
+            #     explicit_weights=[8.0, 4.0, 2.0, 1.0, 1.0],
+            # )
             optimizer.zero_grad()
             total_loss.backward()
             optimizer.step()
@@ -680,6 +632,21 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
                     time_step_weighted=config.get("time_step_weighted", False)
                 )
 
+
+                # (total_loss, loss_delay, loss_power, loss_phase,
+                # loss_az, loss_el, loss_path_length, loss_interaction, loss_channel) = masked_loss_topk_weighted(
+                #     delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                #     az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                #     path_length_pred, interaction_logits, paths_out, path_lengths,
+                #     interactions_out,
+                #     finetune=task,
+                #     pad_value=train_data.pad_value,
+                #     interaction_weight=config.get("interaction_weight", 0.1),
+                #     path_padding_mask=path_padding_mask,
+                #     top_k=5,
+                #     weighting_mode="explicit",
+                #     explicit_weights=[8.0, 4.0, 2.0, 1.0, 1.0],
+                # )
                 path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1), 
                                                        path_lengths)
                 interaction_accuracy, interaction_f1 = compute_interaction_metrics_from_logits(
@@ -784,41 +751,67 @@ def train_with_interactions(model, train_loader, val_loader, config, train_data,
 
 
 # %%
-if config["USE_WANDB"]:
-    import wandb
-
-    wandb.init(
-        project="deepmimo-path-decoder",
-        config = config
-        # config={
-        #     "batch_size": train_loader.batch_size,
-        #     "split_type": train_data.split_by,
-        # }
-    )
-
-
-
-
-
-# %%
 all_scenarios = ['city_47_chicago_3p5', 'city_23_beijing_3p5', 'city_91_xiangyang_3p5', 'city_17_seattle_3p5_s', 'city_12_fortworth_3p5', 'city_92_sãopaulo_3p5', 'city_35_san_francisco_3p5', 'city_10_florida_villa_7gp_1758095156175', 'city_19_oklahoma_3p5_s', 'city_74_chiyoda_3p5']
 
-for scenario in all_scenarios[:1]:
-# %%
-    # model = GPTPathDecoder().to(device)
-    model = PathDecoder(hidden_dim=config["hidden_dim"], n_layers = config["n_layers"], n_heads=config["n_heads"]).to(device)
 
-    print("Total trainable parameters:", count_parameters(model))
-    dataset = dm.load(scenario, )
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train/evaluate the multiscenario direct training model.")
+    parser.add_argument("scenarios", nargs="*", help="Explicit scenario names to run.")
+    parser.add_argument("--scenario", dest="scenario_flag", action="append", help="Scenario name to run. Can be repeated.")
+    parser.add_argument("--scenario-file", type=str, help="Optional file with one scenario per line.")
+    parser.add_argument("--shard-index", type=int, default=None, help="0-based shard index for splitting the scenario list.")
+    parser.add_argument("--num-shards", type=int, default=None, help="Total number of shards for splitting the scenario list.")
+    parser.add_argument("--csv-log-file", type=str, default=csv_log_file, help="CSV path for saving per-scenario results.")
+    parser.add_argument("--checkpoint-dir", type=str, default="checkpoints2", help="Directory for scenario checkpoints.")
+    parser.add_argument("--skip-train", action="store_true", help="Only load the best checkpoint and run evaluation.")
+    return parser.parse_args()
+
+
+def resolve_scenarios(args):
+    scenarios = []
+    if args.scenarios:
+        scenarios.extend(args.scenarios)
+    if args.scenario_flag:
+        scenarios.extend(args.scenario_flag)
+    if args.scenario_file:
+        with open(args.scenario_file, "r", encoding="utf-8") as handle:
+            scenarios.extend([line.strip() for line in handle if line.strip()])
+    if not scenarios:
+        scenarios = list(all_scenarios)
+    if args.num_shards is not None or args.shard_index is not None:
+        if args.num_shards is None or args.shard_index is None:
+            raise ValueError("Both --num-shards and --shard-index must be provided together.")
+        if args.num_shards <= 0:
+            raise ValueError("--num-shards must be positive.")
+        if args.shard_index < 0 or args.shard_index >= args.num_shards:
+            raise ValueError("--shard-index must be in [0, num_shards).")
+        scenarios = [s for i, s in enumerate(scenarios) if i % args.num_shards == args.shard_index]
+    return scenarios
+
+
+def load_best_checkpoint(model, checkpoint_path):
+    if not os.path.exists(checkpoint_path):
+        print(f"Warning: Checkpoint not found at {checkpoint_path}")
+        return None, None
+    checkpoint = torch.load(checkpoint_path)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    epoch = checkpoint['epoch']
+    best_avg_val_loss = checkpoint['best_val_loss']
+    print(f"✓ Loaded best checkpoint from epoch {epoch} (val_loss: {best_avg_val_loss:.4f})")
+    return epoch, best_avg_val_loss
+
+
+def run_scenario(scenario, args):
+    dataset = dm.load(scenario)
     print(f"######### Training on Scenario {scenario}  #########")
     config = {
-        "BATCH_SIZE":128,
+        "BATCH_SIZE": 128,
         "PAD_VALUE": 0,
         "USE_WANDB": False,
-        "LR":2e-5,
-        "epochs" : 300,
-        "interaction_weight": 0.01,  # Weight for interaction loss
-        "experiment": f"snoise_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
+        "LR": 2e-5,
+        "epochs": 300,
+        "interaction_weight": 0.01,
+        "experiment": f"nano_snoise_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
         "hidden_dim": 512,
         "n_layers": 8,
         "n_heads": 8,
@@ -827,115 +820,83 @@ for scenario in all_scenarios[:1]:
         "TARGET_NOISE_PARAMS": None,
     }
 
+    model = PathDecoder(hidden_dim=config["hidden_dim"], n_layers=config["n_layers"], n_heads=config["n_heads"]).to(device)
+    print("Total trainable parameters:", count_parameters(model))
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["LR"])
-    # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=2, mode="min")
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, 
-        T_0=25,      # Restart every 10 epochs
-        T_mult=1,    # Double the period after each restart
-        eta_min=1e-8 # Minimum LR
+        optimizer,
+        T_0=25,
+        T_mult=1,
+        eta_min=1e-8,
     )
 
-    # Initialize best checkpoint tracking (based on path_length loss)
+    os.makedirs(args.checkpoint_dir, exist_ok=True)
+    checkpoint_path = os.path.join(args.checkpoint_dir, f"{config['experiment']}_best_model_checkpoint.pth")
 
-    # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=2, mode="min")
-
-    checkpoint_path = f"{config['experiment']}_best_model_checkpoint.pth"
-    os.makedirs("checkpoints2", exist_ok=True)
-    checkpoint_path = os.path.join("checkpoints2", checkpoint_path)
-    # train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
-    # data_stats = get_dataset_statistics(train_data)
-    
-    train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power", normalizers = None, apply_normalizers =[], pad_value=config["PAD_VALUE"] )
+    train_data = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power", normalizers=None, apply_normalizers=[], pad_value=config["PAD_VALUE"])
     train_loader = torch.utils.data.DataLoader(
-        dataset     = train_data,
-        batch_size  = config['BATCH_SIZE'],
-        shuffle     = True,
-        collate_fn= train_data.collate_fn
-        )
-    val_data  = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power", normalizers = None, apply_normalizers =[], pad_value=config["PAD_VALUE"] )
+        dataset=train_data,
+        batch_size=config["BATCH_SIZE"],
+        shuffle=True,
+        collate_fn=train_data.collate_fn,
+    )
+    val_data = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power", normalizers=None, apply_normalizers=[], pad_value=config["PAD_VALUE"])
     val_loader = torch.utils.data.DataLoader(
-        dataset     = val_data,
-        batch_size  = config['BATCH_SIZE'],
-        shuffle     = False,
-        collate_fn= val_data.collate_fn
+        dataset=val_data,
+        batch_size=config["BATCH_SIZE"],
+        shuffle=False,
+        collate_fn=val_data.collate_fn,
+    )
+
+    if not args.skip_train:
+        train_with_interactions(
+            model,
+            train_loader,
+            val_loader,
+            config,
+            train_data,
+            optimizer,
+            scheduler,
+            checkpoint_path,
         )
 
-    # Train
-    # train_with_interactions(model, train_loader, val_loader, config, train_data)
-    
-    # %% [markdown]
-    # 
-    # evaluate_generation(train_loader)
-    # 
-
-    # %%
-    def load_best_checkpoint(model, checkpoint_path="checkpoints2/best_model_checkpoint.pth"):
-        """
-        Load the best model checkpoint saved during training.
-        
-        Args:
-            model: The model instance to load the checkpoint into
-            checkpoint_path: Path to the checkpoint file
-        
-        Returns:
-            epoch: Epoch at which best checkpoint was saved
-            best_val_loss: Best validation loss achieved
-        """
-        if not os.path.exists(checkpoint_path):
-            print(f"Warning: Checkpoint not found at {checkpoint_path}")
-            return None, None
-        
-        checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        epoch = checkpoint['epoch']
-        best_avg_val_loss = checkpoint['best_val_loss']
-        
-        print(f"✓ Loaded best checkpoint from epoch {epoch} (val_loss: {best_avg_val_loss:.4f})")
-        return epoch, best_avg_val_loss
-    # torch.serialization.add_safe_globals([np._core.multiarray.scalar])
-    # torch.serialization.add_safe_globals([np.dtype])
-
-    # Load best checkpoint for inference/evaluation
     best_epoch, best_loss = load_best_checkpoint(model, checkpoint_path=checkpoint_path)
-
-    # %%
-    checkpoint_path
-
-    # %%
     results = evaluate_model(model, val_loader)
-    # print(results)
-    avg_delay, avg_power, avg_phase, avg_az, avg_el, avg_path_length_rmse, avg_interaction_accuracy, avg_interaction_f1, avg_delay_mae, avg_power_mae, avg_phase_mae, avg_az_mae, avg_el_mae, avg_path_length_mae  = results
-    # (avg_delay, avg_power, avg_phase, avg_path_length_rmse, 
-    #  avg_delay_mae, avg_power_mae, avg_phase_mae, avg_path_length_mae) = results
+    avg_delay, avg_power, avg_phase, avg_az, avg_el, avg_path_length_rmse, avg_interaction_accuracy, avg_interaction_f1, avg_delay_mae, avg_power_mae, avg_phase_mae, avg_az_mae, avg_el_mae, avg_path_length_mae = results
     scenario_row = {
-            "scenario": scenario,
-            "delay_rmse": avg_delay,
-            "power_rmse": avg_power,
-            "phase_rmse": avg_phase,
-            "az_rmse": avg_az,
-            "el_rmse": avg_el,
-            "phase_rmse": avg_phase,
-            "path_length_rmse": avg_path_length_rmse,
-            "interaction_accuracy": avg_interaction_accuracy,
-            "interaction_f1": avg_interaction_f1,
-            "delay_mae": avg_delay_mae,
-            "power_mae": avg_power_mae,
-            "phase_mae": avg_phase_mae,
-            "avg_az_mae": avg_az_mae,
-            "avg_el_mae": avg_el_mae,
-            "path_length_mae": avg_path_length_mae,
-            "best_val_loss": best_loss.item() if hasattr(best_loss, 'item') else best_loss
-        }
-
-        # 4. Append to CSV
+        "scenario": scenario,
+        "delay_rmse": avg_delay,
+        "power_rmse": avg_power,
+        "phase_rmse": avg_phase,
+        "az_rmse": avg_az,
+        "el_rmse": avg_el,
+        "path_length_rmse": avg_path_length_rmse,
+        "interaction_accuracy": avg_interaction_accuracy,
+        "interaction_f1": avg_interaction_f1,
+        "delay_mae": avg_delay_mae,
+        "power_mae": avg_power_mae,
+        "phase_mae": avg_phase_mae,
+        "avg_az_mae": avg_az_mae,
+        "avg_el_mae": avg_el_mae,
+        "path_length_mae": avg_path_length_mae,
+        "best_val_loss": best_loss.item() if hasattr(best_loss, "item") else best_loss,
+    }
     df = pd.DataFrame([scenario_row])
-    # header=not os.path.exists(...) ensures the header is only written once
-    df.to_csv(csv_log_file, mode='a', index=False, header=not os.path.exists(csv_log_file))
-
-    print(f"✓ Results for {scenario} saved to {csv_log_file}")
-    del dataset, train_loader, val_loader, model
+    df.to_csv(args.csv_log_file, mode='a', index=False, header=not os.path.exists(args.csv_log_file))
+    print(f"✓ Results for {scenario} saved to {args.csv_log_file}")
 
 
-    # %%
-    # show_example(model, val_loader, sample_index=24)
+def main():
+    args = parse_args()
+    scenarios = resolve_scenarios(args)
+    if not scenarios:
+        print("No scenarios selected for this run.")
+        return
+    print(f"Running {len(scenarios)} scenario(s): {scenarios}")
+    for scenario in scenarios:
+        run_scenario(scenario, args)
+
+
+if __name__ == "__main__":
+    main()

@@ -228,7 +228,7 @@ def parse_args():
     parser.add_argument("--output-csv", type=str, default="knn_baseline_results.csv")
     return parser.parse_args()
 
-# python knn_baseline.py --knn-mode average --k 3 --output-csv knn_baseline_results_average_3.csv
+# python knn_baseline.py --knn-mode average --k 5 --output-csv knn_baseline_results_kth_5.csv
 def main():
     args = parse_args()
     scenarios = [s.strip() for s in args.scenarios.split(",") if s.strip()]

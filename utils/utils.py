@@ -353,10 +353,12 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
         mse = ((gt_scaled.real - pred_scaled.real) ** 2 + (gt_scaled.imag - pred_scaled.imag) ** 2).mean()
         gt_norm_sq = (gt_scaled.real ** 2 + gt_scaled.imag ** 2).mean()
         # Clamp denominator to avoid explosion when gt is very weak
-        channel_loss = mse / (gt_norm_sq.clamp(min=1e-6) + 1e-10)
+        # channel_loss = mse / (gt_norm_sq.clamp(min=1e-6) + 1e-10)
+        channel_loss = mse
+
  
         # Clamp loss to prevent channel term from exploding and dominating total loss
-        channel_loss = channel_loss.clamp(max=100.0)
+        # channel_loss = channel_loss.clamp(max=100.0)
         total_loss += 0.01 * channel_loss
         # az_t = az_t.masked_fill(mask, 0)
         # el_t = el_t.masked_fill(mask, 0)

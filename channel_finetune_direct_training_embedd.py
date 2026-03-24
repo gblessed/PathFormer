@@ -32,6 +32,19 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+all_scenarios = [
+    "city_47_chicago_3p5",
+    "city_23_beijing_3p5",
+    "city_91_xiangyang_3p5",
+    "city_17_seattle_3p5_s",
+    "city_12_fortworth_3p5",
+    "city_92_sãopaulo_3p5",
+    "city_35_san_francisco_3p5",
+    "city_10_florida_villa_7gp_1758095156175",
+    "city_19_oklahoma_3p5_s",
+    "city_74_chiyoda_3p5",
+]
+
 # -----------------------------------------------------------------------------
 # Config: path checkpoint (trained without channel loss) and channel-finetune
 # -----------------------------------------------------------------------------
@@ -52,7 +65,8 @@ def get_config(scenario, path_checkpoint_path):
         "GRAD_CLIP_NORM": 1.0,
         "PATH_CHECKPOINT": path_checkpoint_path,
         "channel_loss_weight": 1.0,
-        "embed_pool_mode": "mean_valid",
+        "embed_pool_mode": "mean",
+        "max_generated_steps": 25,
     }
 
 
@@ -105,8 +119,8 @@ def build_gt_channel_batch(paths_out, path_padding_mask, pad_value, device):
 
 class PathDecoderChannelFromEmbedding(nn.Module):
     """
-    Frozen PathDecoder backbone + channel head. Uses multipath embeddings
-    (first / last / mean_valid step) to predict the channel.
+    Frozen PathDecoder backbone + channel head. Uses hidden states from the
+    backbone's own autoregressive rollout to predict the channel.
     """
 
     def __init__(
@@ -114,13 +128,15 @@ class PathDecoderChannelFromEmbedding(nn.Module):
         backbone: PathDecoder,
         hidden_dim: int,
         channel_numel: int,
-        pool_mode: Literal["first", "last", "mean_valid"] = "mean_valid",
+        pool_mode: Literal["first", "last", "mean"] = "mean",
+        max_generated_steps: int = 25,
     ):
         super().__init__()
         self.backbone = backbone
         self.hidden_dim = hidden_dim
         self.channel_numel = channel_numel
         self.pool_mode = pool_mode
+        self.max_generated_steps = max_generated_steps
         for p in self.backbone.parameters():
             p.requires_grad = False
         self.channel_head = nn.Sequential(
@@ -130,32 +146,51 @@ class PathDecoderChannelFromEmbedding(nn.Module):
             nn.Linear(hidden_dim * 2, channel_numel),
         )
 
-    def _pool_embeddings(self, h_paths, path_padding_mask):
-        # h_paths (B, T, H), path_padding_mask (B, T) True = padding
-        # paths_in has T steps, mask for paths_in is path_padding_mask[:, :-1]
-        T = h_paths.size(1)
-        valid = ~path_padding_mask[:, :T]  # (B, T) True = valid
+    def _pool_embeddings(self, h_paths):
         if self.pool_mode == "first":
             return h_paths[:, 0]
         if self.pool_mode == "last":
             return h_paths[:, -1]
-        # mean_valid
-        valid_float = valid.float().unsqueeze(-1)
-        denom = valid_float.sum(dim=1).clamp(min=1e-8)
-        agg = (h_paths * valid_float).sum(dim=1) / denom
-        return agg
+        return h_paths.mean(dim=1)
+
+    def _rollout_generated_hidden(self, prompts, max_steps):
+        device = prompts.device
+        B = prompts.size(0)
+        cur = torch.zeros(B, 1, 5, device=device, dtype=prompts.dtype)
+        inter_str = -1 * torch.ones(B, 1, 4, device=device, dtype=prompts.dtype)
+        hidden_steps = []
+
+        for _ in range(max_steps):
+            h_paths, _ = self.backbone.forward_hidden(prompts, cur, inter_str)
+            last_h = h_paths[:, -1, :]
+
+            out = self.backbone.out(last_h)
+            d_t = self.backbone.out_delay(last_h).squeeze(-1)
+            p_t = self.backbone.out_power(last_h).squeeze(-1)
+            ph_t = torch.atan2(out[:, 0], out[:, 1])
+            az_t = torch.atan2(out[:, 2], out[:, 3])
+            el_t = torch.atan2(out[:, 4], out[:, 5])
+            inter_probs_t = torch.sigmoid(self.backbone.interaction_head(last_h))
+
+            next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1)
+            hidden_steps.append(last_h)
+            cur = torch.cat([cur, next_path.unsqueeze(1)], dim=1)
+            inter_str = torch.cat([inter_str, inter_probs_t.unsqueeze(1)], dim=1)
+
+        return torch.stack(hidden_steps, dim=1)
 
     def forward(self, prompts, paths_in, interactions_in, path_padding_mask=None):
         """
-        paths_in: (B, T, 5). path_padding_mask: (B, T_path) for full sequence;
-        valid positions for paths_in are ~path_padding_mask[:, :-1].
+        The channel head uses hidden states from the backbone's generated rollout,
+        not teacher-forced ground-truth paths. `paths_in` is used only to infer
+        rollout length when provided.
+
         Returns pred_channel: (B, 1, M_rx, M_tx, n_sc) complex.
         """
-        B, T_in, _ = paths_in.shape
-        if path_padding_mask is None:
-            path_padding_mask = torch.zeros(B, T_in + 1, dtype=torch.bool, device=paths_in.device)
-        h_paths, _ = self.backbone.forward_hidden(prompts, paths_in, interactions_in)
-        agg = self._pool_embeddings(h_paths, path_padding_mask)
+        B = prompts.size(0)
+        rollout_steps = paths_in.size(1) if paths_in is not None else self.max_generated_steps
+        h_paths = self._rollout_generated_hidden(prompts, rollout_steps)
+        agg = self._pool_embeddings(h_paths)
         ch_flat = self.channel_head(agg)
         half = self.channel_numel // 2
         real = ch_flat[:, :half]
@@ -646,7 +681,32 @@ def load_path_checkpoint(model, checkpoint_path):
     return epoch
 
 
-def train_channel_finetune(model, train_loader, val_loader, config, train_data):
+def load_channel_checkpoint(model, checkpoint_path):
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Channel checkpoint not found: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    epoch = checkpoint.get("epoch", -1)
+    best_val_ch_loss = checkpoint.get("best_val_ch_loss", None)
+    if hasattr(best_val_ch_loss, "item"):
+        best_val_ch_loss = best_val_ch_loss.item()
+    print(
+        f"✓ Loaded channel checkpoint from {checkpoint_path} "
+        f"(epoch {epoch}, best_val_ch_loss={best_val_ch_loss})"
+    )
+    return epoch, best_val_ch_loss
+
+
+def train_channel_finetune(
+    model,
+    train_loader,
+    val_loader,
+    config,
+    train_data,
+    optimizer,
+    scheduler,
+    checkpoint_path,
+):
     """Train only on channel loss. For PathDecoderChannelFromEmbedding: pred channel from embeddings vs GT."""
     best_val_ch_loss = float("inf")
     channel_numel = get_channel_numel()
@@ -760,44 +820,75 @@ def train_channel_finetune(model, train_loader, val_loader, config, train_data):
         )
 
 
-# -----------------------------------------------------------------------------
-# Main: one scenario, load path checkpoint, finetune on channel, then evaluate
-# -----------------------------------------------------------------------------
-if __name__ == "__main__":
+def parse_args():
     import argparse
-    parser = argparse.ArgumentParser(description="Channel-only finetuning from path checkpoint")
-    parser.add_argument("--scenario", type=str, default="city_47_chicago_3p5", help="DeepMIMO scenario")
-    parser.add_argument(
-        "--path_checkpoint",
-        type=str,
-        default=None,
-        help="Path to .pth path-prediction checkpoint; default: checkpoints2/noise_enc_direct_<scenario>_...",
+
+    parser = argparse.ArgumentParser(
+        description="Channel finetuning/evaluation from generated PathDecoder embeddings"
     )
+    parser.add_argument("scenarios", nargs="*", help="Explicit scenario names to run.")
+    parser.add_argument("--scenario", dest="scenario_flag", action="append", help="Scenario name to run. Can be repeated.")
+    parser.add_argument("--scenario-file", type=str, help="Optional file with one scenario per line.")
+    parser.add_argument("--path_checkpoint", type=str, default=None, help="Optional explicit path checkpoint. Use only with a single scenario.")
+    parser.add_argument("--path-checkpoint-dir", type=str, default="checkpoints2", help="Directory containing path checkpoints from multiscenario_direct_training.py.")
+    parser.add_argument("--channel-checkpoint-dir", type=str, default="checkpoints_channel_finetune", help="Directory for saving/loading channel finetune checkpoints.")
+    parser.add_argument("--csv-log-file", type=str, default="channel_finetune_embed_results.csv", help="CSV file for per-scenario results.")
     parser.add_argument("--epochs", type=int, default=50, help="Channel finetune epochs")
     parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate for channel finetune")
-    parser.add_argument("--eval_only", action="store_true", help="Only load path checkpoint and run evaluation")
+    parser.add_argument("--batch-size", type=int, default=128, help="Batch size")
+    parser.add_argument("--eval_only", action="store_true", help="Only load the saved channel checkpoint and run evaluation")
     parser.add_argument(
         "--embed_pool",
         type=str,
-        choices=["first", "last", "mean_valid"],
-        default="mean_valid",
-        help="How to pool path embeddings for channel prediction: first step, last step, or mean over valid steps",
+        choices=["first", "last", "mean"],
+        default="mean",
+        help="How to pool generated path embeddings for channel prediction: first step, last step, or mean over generated steps",
     )
-    args = parser.parse_args()
-
-    scenario = args.scenario
-    path_checkpoint_path = args.path_checkpoint or (
-        f"/home/blessedg/Pathformer/checkpoints2/noise_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat_best_model_checkpoint.pth"
+    parser.add_argument(
+        "--max_generated_steps",
+        type=int,
+        default=25,
+        help="Number of autoregressive rollout steps used to build generated embeddings.",
     )
-    
+    return parser.parse_args()
 
+
+def resolve_scenarios(args):
+    scenarios = []
+    if args.scenarios:
+        scenarios.extend(args.scenarios)
+    if args.scenario_flag:
+        scenarios.extend(args.scenario_flag)
+    if args.scenario_file:
+        with open(args.scenario_file, "r", encoding="utf-8") as handle:
+            scenarios.extend([line.strip() for line in handle if line.strip()])
+    if not scenarios:
+        scenarios = list(all_scenarios[2:])
+    return scenarios
+
+
+def default_path_checkpoint(path_checkpoint_dir, scenario):
+    experiment = f"snoise_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat"
+    return os.path.join(path_checkpoint_dir, f"{experiment}_best_model_checkpoint.pth")
+
+
+def run_scenario(scenario, args):
+    if args.path_checkpoint is not None and len(resolve_scenarios(args)) > 1:
+        raise ValueError("--path_checkpoint can only be used when evaluating a single scenario.")
+
+    path_checkpoint_path = args.path_checkpoint or default_path_checkpoint(
+        args.path_checkpoint_dir,
+        scenario,
+    )
     dm.download(scenario)
     dataset = dm.load(scenario)
 
     config = get_config(scenario, path_checkpoint_path)
     config["epochs"] = args.epochs
     config["LR"] = args.lr
+    config["BATCH_SIZE"] = args.batch_size
     config["embed_pool_mode"] = args.embed_pool
+    config["max_generated_steps"] = args.max_generated_steps
 
     channel_numel = get_channel_numel()
     backbone = PathDecoder(
@@ -811,7 +902,9 @@ if __name__ == "__main__":
         hidden_dim=config["hidden_dim"],
         channel_numel=channel_numel,
         pool_mode=config["embed_pool_mode"],
+        max_generated_steps=config["max_generated_steps"],
     ).to(device)
+    print(f"######### Channel embedding eval on Scenario {scenario} #########")
     print("Total trainable parameters (channel head only):", count_parameters(model))
 
     train_data = PreTrainMySeqDataLoader(
@@ -845,9 +938,9 @@ if __name__ == "__main__":
         collate_fn=val_data.collate_fn,
     )
 
-    os.makedirs("checkpoints_channel_finetune", exist_ok=True)
+    os.makedirs(args.channel_checkpoint_dir, exist_ok=True)
     checkpoint_path = os.path.join(
-        "checkpoints_channel_finetune",
+        args.channel_checkpoint_dir,
         f"{config['experiment']}_best_channel_checkpoint.pth",
     )
 
@@ -858,33 +951,68 @@ if __name__ == "__main__":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer, T_0=25, T_mult=1, eta_min=1e-8
         )
-        train_channel_finetune(model, train_loader, val_loader, config, train_data)
+        train_channel_finetune(
+            model,
+            train_loader,
+            val_loader,
+            config,
+            train_data,
+            optimizer,
+            scheduler,
+            checkpoint_path,
+        )
         if os.path.exists(checkpoint_path):
-            ckpt = torch.load(checkpoint_path, map_location=device)
-            model.load_state_dict(ckpt["model_state_dict"])
-            print(f"✓ Loaded best channel checkpoint for final evaluation")
+            load_channel_checkpoint(model, checkpoint_path)
     else:
-        print("eval_only: skipping channel finetune, evaluating path checkpoint as-is.")
+        load_channel_checkpoint(model, checkpoint_path)
 
-    # results = evaluate_model(model, val_loader, train_data_pad_value=config["PAD_VALUE"])
     avg_ch_nmse_log, avg_ch_score, avg_ch_nmse = evaluate_channel_from_embed(
         model, val_loader, train_data_pad_value=config["PAD_VALUE"]
     )
 
-    csv_log_file = "channel_finetune_embed_results.csv"
     row = {
         "scenario": scenario,
         "path_checkpoint": path_checkpoint_path,
+        "channel_checkpoint": checkpoint_path,
         "embed_pool": config["embed_pool_mode"],
+        "max_generated_steps": config["max_generated_steps"],
+        "eval_only": args.eval_only,
         "ch_nmse_log": avg_ch_nmse_log,
         "avg_ch_score": avg_ch_score,
         "avg_ch_nmse_dB": avg_ch_nmse,
     }
     df = pd.DataFrame([row])
     df.to_csv(
-        csv_log_file,
+        args.csv_log_file,
         mode="a",
         index=False,
-        header=not os.path.exists(csv_log_file),
+        header=not os.path.exists(args.csv_log_file),
     )
-    print(f"✓ Results saved to {csv_log_file}")
+    print(f"✓ Results for {scenario} saved to {args.csv_log_file}")
+    return row
+
+
+def main():
+    args = parse_args()
+    scenarios = resolve_scenarios(args)
+    if not scenarios:
+        print("No scenarios selected for this run.")
+        return
+
+    print(f"Running {len(scenarios)} scenario(s): {scenarios}")
+    for scenario in scenarios:
+        try:
+            run_scenario(scenario, args)
+        except Exception as exc:
+            print(f"✗ Failed scenario {scenario}: {exc}")
+            error_row = pd.DataFrame([{"scenario": scenario, "error": str(exc)}])
+            error_row.to_csv(
+                args.csv_log_file,
+                mode="a",
+                index=False,
+                header=not os.path.exists(args.csv_log_file),
+            )
+
+
+if __name__ == "__main__":
+    main()

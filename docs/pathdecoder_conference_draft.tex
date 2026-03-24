@@ -1,0 +1,424 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,amsthm,bm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{multirow}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{cleveref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!60!black,
+  citecolor=blue!60!black,
+  urlcolor=blue!60!black
+}
+
+\title{\textbf{PathFormer: Generative Next-Path Prediction for Transferable Wireless Inference}}
+\author{Author Names Omitted for Double-Blind Review}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Recent wireless foundation models have mostly treated the channel itself as the pretraining object, operating on CSI or CIR tensors through masked reconstruction, contrastive learning, or large-model adaptation. This line of work is promising, but it learns propagation only after multiple physical phenomena have already been entangled into channel measurements. In contrast, this paper argues that \emph{the path domain is the right intermediate representation} for transferable wireless learning.
+
+We propose \emph{PathFormer}, a multimodal autoregressive transformer that conditions on transmitter--receiver geometry, scenario context, and optional retrieved neighborhood statistics, and then performs \emph{next-path prediction}: it generates a variable-length sequence of propagation paths ordered by importance, where each path token contains delay, power, phase, angle-of-arrival, and interaction labels. This formulation is the wireless analogue of next-token prediction in language modeling, but with physically structured continuous outputs rather than discrete vocabulary tokens.
+
+PathFormer is trained in two stages. First, we pretrain across multiple propagation scenarios to learn reusable propagation priors. Second, we finetune on a target scenario for downstream adaptation. We further introduce a kNN-aware variant that retrieves scenario-local cluster statistics and injects them as auxiliary memory, analogous to retrieval-augmented transformers. The resulting path generator exposes both explicit predicted paths and generated hidden states, enabling a unified transfer interface for channel reconstruction, beam prediction, zero-shot beam selection, and user localization.
+
+The paper contributes a path-centric foundation-modeling perspective for wireless inference, a logical pretrain--finetune pipeline across scenarios, a retrieval-aware propagation transformer, and a clean experimental program for comparing multiscenario pretraining, kNN-aware adaptation, and ordinary single-scenario PathFormer training under realistic inference-time constraints.
+\end{abstract}
+
+\section{Introduction}
+Large-scale pretraining is rapidly entering wireless learning. Recent papers have proposed channel-oriented wireless foundation models based on masked reconstruction, contrastive learning, unified CSI prediction, or channel-language style large-model narratives \cite{lwm,wifo,csiclip,channelgpt,contrawimae}. The shared intuition is compelling: many wireless tasks are downstream views of the same latent propagation environment, so a model trained broadly enough should learn reusable structure rather than solving one task at a time.
+
+However, most existing wireless foundation models still work at the \emph{channel level}. They pretrain directly on CSI, CIR, or derived channel embeddings. That design is useful when the target task itself is channel prediction or channel representation learning, but it also imposes a structural limitation: the channel tensor is already an entangled superposition of many propagation events. Once the signal has been collapsed into CSI or CIR arrays, the model no longer sees an explicit representation of which propagation paths exist, which ones dominate, which interactions generated them, or how those path-level mechanisms vary across users and scenarios.
+
+This paper takes a different view. We argue that a transferable wireless model should operate on the \emph{path domain}, not only the channel domain. Geometry does not directly produce a beam label, a localization estimate, or a channel tensor in isolation. Rather, the scene induces a variable-cardinality set of propagation paths, each with physical attributes such as delay, power, phase, and angle, together with interaction semantics such as reflection, diffraction, and scattering. Those paths then determine the channel and strongly influence downstream inference tasks. If a model can learn to generate this path sequence, then its internal states should form a reusable propagation representation.
+
+This leads to our central proposal: \emph{next-path prediction}. Inspired by next-token prediction in language modeling \cite{vaswani,gpt3}, we represent each user by an ordered sequence of path tokens and train an autoregressive transformer to predict the next path conditioned on geometry, scenario context, and previously generated paths. The analogy is conceptually important. In language modeling, next-token prediction forces a model to capture syntax, semantics, and long-range structure because future tokens depend on prior context. In wireless propagation, next-path prediction forces a model to capture dominant-path ordering, inter-path dependence, and scene-specific regularities because later paths depend on earlier ones and on the underlying geometry. The key difference is that our ``tokens'' are not words from a discrete vocabulary; they are physically structured, continuous, and multi-label.
+
+We instantiate this idea in \emph{PathFormer}, a multimodal encoder--decoder style transformer. PathFormer consumes heterogeneous context streams: prompt tokens derived from transmitter--receiver geometry, environment descriptors, optional environment-property tokens, and optional retrieved neighborhood statistics. It then autoregressively predicts a path sequence. This multimodal decomposition is closer in spirit to modern multimodal transformers that bridge multiple input streams into a common generative backbone \cite{flamingo,blip2,palme} than to a single-stream CSI autoencoder.
+
+The full PathFormer pipeline contains three modeling levels.
+\begin{enumerate}[leftmargin=1.5em]
+    \item \textbf{Single-scenario path modeling.} A baseline PathFormer is trained directly on one scenario to predict ordered path sequences.
+    \item \textbf{kNN-aware scenario adaptation.} A retrieval-augmented variant injects scenario-local cluster statistics retrieved from nearest neighbors in user-position space, analogous to retrieval-augmented language modeling \cite{knnlm,retro}.
+    \item \textbf{Mixed-scenario pretraining and target-scenario finetuning.} A multiscenario PathFormer is first pretrained across diverse environments and then finetuned for a target scenario and downstream tasks.
+\end{enumerate}
+
+This hierarchy leads to the main empirical question of the paper: does a path-level foundation model transfer better than an ordinary single-scenario path predictor, and does mixed-scenario pretraining outperform purely local retrieval augmentation? Our experimental design is built to test the ordering
+\[
+\text{mixed-scenario pretrain + target finetune}
+\;\geq\;
+\text{kNN-aware PathFormer}
+\;\geq\;
+\text{ordinary single-scenario PathFormer},
+\]
+first on path prediction itself and then on downstream wireless tasks.
+
+The contributions of the paper are therefore:
+\begin{enumerate}[leftmargin=1.5em]
+    \item We position \emph{path-level} generative modeling as an alternative to existing \emph{channel-level} wireless foundation models.
+    \item We formulate wireless propagation as \emph{next-path prediction}, a physically grounded analogue of next-token prediction.
+    \item We propose PathFormer, a multimodal autoregressive transformer that generates path sequences from geometry, environment context, and optional retrieved neighborhood statistics.
+    \item We introduce a multiscenario pretraining plus target-scenario finetuning pipeline, together with a kNN-aware retrieval mechanism that injects scenario-local cluster statistics.
+    \item We show how the same pretrained path generator supports multiple downstream tasks, including channel reconstruction, beam prediction, zero-shot beam selection, and user localization.
+\end{enumerate}
+
+\section{Related Work}
+\subsection{Wireless Foundation Models}
+Wireless foundation modeling is emerging quickly, but most recent approaches learn at the channel representation level rather than the path level. LWM frames wireless channels as a pretraining object for masked modeling and downstream adaptation \cite{lwm}. WiFo proposes a space--time--frequency foundation model for channel prediction and zero-shot generalization across CSI configurations \cite{wifo}. CSI-CLIP treats CIR and CSI as aligned multimodal channel views and uses contrastive learning to build a channel foundation model \cite{csiclip}. ChannelGPT argues for large-model style channel intelligence in future wireless systems \cite{channelgpt}. ContraWiMAE combines masked reconstruction and wireless-specific contrastive objectives for channel representation learning \cite{contrawimae}.
+
+These papers establish that broad pretraining is useful in wireless learning, but they also share a common abstraction: the model consumes or reconstructs CSI/CIR/channel features after multipath effects have already been mixed together. Our work is complementary but earlier in the physical stack. Instead of learning channel representations and hoping they internalize path structure, we explicitly make the path sequence the generative target.
+
+\subsection{Autoregressive Prediction and Next-Token Learning}
+Transformers trained by next-token prediction have become the dominant paradigm for sequence modeling because autoregressive prediction forces the model to capture compositional structure over long contexts \cite{vaswani,gpt3}. We borrow this principle but adapt it to wireless propagation. The goal is not to discretize wireless physics into an artificial vocabulary; rather, it is to represent propagation as an ordered sequence of path tokens and to train a model to predict the next path conditioned on prior paths and scene context. This preserves the strong sequential inductive bias of language modeling while respecting the continuous physical nature of the outputs.
+
+\subsection{Multimodal and Retrieval-Augmented Transformers}
+PathFormer also connects naturally to two adjacent literatures. First, modern multimodal models bridge heterogeneous streams such as text, images, video, and embodiment signals through learned interfaces and shared transformer backbones \cite{flamingo,blip2,palme}. PathFormer plays a similar role for wireless sensing: geometry, environment descriptors, retrieved neighborhood summaries, and autoregressive path tokens are distinct modalities that must be fused into one propagation model.
+
+Second, retrieval-augmented models improve generative predictions by consulting a memory of relevant exemplars or nearest neighbors. Examples include kNN-LM and RETRO in language modeling \cite{knnlm,retro}. Our kNN-aware PathFormer follows the same high-level idea, but the retrieved memory is not text. It is a scenario-local sequence of path-cluster statistics indexed by receiver position, which supplies local propagation regularities without exposing oracle future paths.
+
+\section{Problem Setup}
+Consider a transmitter--receiver pair in scenario $m$. Let
+\begin{equation}
+\mathbf{g} = [\mathbf{x}_{\mathrm{tx}}, \mathbf{x}_{\mathrm{rx}}] \in \mathbb{R}^{6}
+\end{equation}
+denote the geometry prompt formed from transmitter and receiver coordinates. Depending on the model variant, we also observe a scenario descriptor $\mathbf{e}$ and optional environment-property tokens $\mathbf{u}_{1:L}$.
+
+Each user is represented by an ordered path sequence
+\begin{equation}
+\mathcal{P} = \{(\mathbf{s}_t,\mathbf{z}_t)\}_{t=1}^{T},
+\end{equation}
+where $\mathbf{s}_t$ contains continuous path attributes and $\mathbf{z}_t$ is a multi-label interaction vector. In our implementation,
+\begin{equation}
+\mathbf{s}_t =
+[\tau_t,\rho_t,\phi_t,\theta_t^{\mathrm{az}},\theta_t^{\mathrm{el}}],
+\qquad
+\mathbf{z}_t \in \{0,1\}^{4},
+\end{equation}
+with delay $\tau_t$, power $\rho_t$, phase $\phi_t$, azimuth angle-of-arrival $\theta_t^{\mathrm{az}}$, elevation angle-of-arrival $\theta_t^{\mathrm{el}}$, and interaction labels for reflection, diffraction, scattering, and transmission. Paths are sorted by descending power so that early tokens correspond to dominant propagation components.
+
+Our core modeling objective is the conditional path distribution
+\begin{equation}
+p(\mathcal{P}\mid \mathbf{g},\mathbf{e},\mathbf{u},\mathbf{r})
+
+=
+\prod_{t=1}^{T}
+p(\mathbf{s}_t,\mathbf{z}_t \mid \mathbf{g},\mathbf{e},\mathbf{u},\mathbf{r},\mathbf{s}_{<t},\mathbf{z}_{<t}),
+\label{eq:ar}
+\end{equation}
+where $\mathbf{r}$ denotes optional retrieved neighborhood statistics used by the kNN-aware model. This factorization exposes propagation as a sequential generative process instead of a direct geometry-to-channel regression map.
+
+\section{PathFormer}
+\subsection{Next-Path Tokenization}
+To avoid discontinuities for circular variables, each path token is embedded through sine--cosine features:
+\begin{equation}
+\tilde{\mathbf{s}}_t =
+[\tau_t,\rho_t,\sin\phi_t,\cos\phi_t,
+\sin\theta_t^{\mathrm{az}},\cos\theta_t^{\mathrm{az}},
+\sin\theta_t^{\mathrm{el}},\cos\theta_t^{\mathrm{el}},\mathbf{z}_t].
+\end{equation}
+This turns each path into a physically meaningful token while keeping the representation continuous and differentiable. Compared with channel-level tensors, this tokenization preserves variable path cardinality, path ordering, and explicit interaction structure.
+
+\subsection{Multimodal Encoder--Decoder View}
+PathFormer is best understood as a multimodal encoder--decoder transformer. Geometry prompts are projected into learned prefix tokens,
+\begin{equation}
+\mathbf{M}_{\mathrm{geom}} = E_{\mathrm{geom}}(\mathbf{g}),
+\end{equation}
+environment descriptors become auxiliary context tokens,
+\begin{equation}
+\mathbf{M}_{\mathrm{env}} = E_{\mathrm{env}}(\mathbf{e},\mathbf{u}_{1:L}),
+\end{equation}
+and retrieved neighborhood statistics, when available, are embedded as retrieval memory,
+\begin{equation}
+\mathbf{M}_{\mathrm{ret}} = E_{\mathrm{ret}}(\mathbf{r}_{1:T_r}).
+\end{equation}
+The final memory is the concatenation
+\begin{equation}
+\mathbf{M} = [\mathbf{M}_{\mathrm{geom}};\mathbf{M}_{\mathrm{env}};\mathbf{M}_{\mathrm{ret}}].
+\end{equation}
+
+The decoder then autoregressively consumes past path tokens. Let $\mathbf{x}_t$ denote the embedded token for path $t$, including a positional embedding. The hidden state at time $t$ is
+\begin{equation}
+\mathbf{h}_t = \mathrm{Decoder}(\mathbf{x}_{\le t}, \mathbf{M}),
+\end{equation}
+with a causal mask over previously generated paths.
+
+This multimodal view is important conceptually. PathFormer is not merely a transformer that predicts five numbers per step. It is a propagation model that fuses multiple physically distinct information streams into a common hidden state, similar in spirit to how multimodal foundation models bridge text, vision, and embodiment \cite{flamingo,blip2,palme}.
+
+\subsection{Prediction Heads}
+From each hidden state $\mathbf{h}_t$, the model predicts the next path attributes:
+\begin{align}
+\hat{\tau}_t &= f_{\tau}(\mathbf{h}_t), \\
+\hat{\rho}_t &= f_{\rho}(\mathbf{h}_t), \\
+[\widehat{\sin\phi_t},\widehat{\cos\phi_t},
+\widehat{\sin\theta_t^{\mathrm{az}}},\widehat{\cos\theta_t^{\mathrm{az}}},
+\widehat{\sin\theta_t^{\mathrm{el}}},\widehat{\cos\theta_t^{\mathrm{el}}}]
+&= f_{\mathrm{ang}}(\mathbf{h}_t), \\
+\hat{\mathbf{z}}_t &= f_{\mathrm{int}}(\mathbf{h}_t).
+\end{align}
+Angles are recovered with $\mathrm{atan2}(\cdot,\cdot)$, and an additional path-count head predicts the effective sequence length from the conditioning memory.
+
+\subsection{Training Objective}
+Let $\mathcal{M}$ be the valid-path mask. The base objective combines path-attribute regression, interaction prediction, and path-count supervision:
+\begin{equation}
+\mathcal{L}_{\mathrm{path}}
+=
+\lambda_{\tau}\mathcal{L}_{\tau}
++ \lambda_{\rho}\mathcal{L}_{\rho}
++ \lambda_{\phi}\mathcal{L}_{\phi}
++ \lambda_{\mathrm{az}}\mathcal{L}_{\mathrm{az}}
++ \lambda_{\mathrm{el}}\mathcal{L}_{\mathrm{el}}
++ \lambda_{\mathrm{int}}\mathcal{L}_{\mathrm{int}}
++ \lambda_{\mathrm{cnt}}\mathcal{L}_{\mathrm{cnt}}.
+\label{eq:loss}
+\end{equation}
+The implementation supports masked losses, target noise injection, and importance weighting over early paths. This is well matched to wireless propagation because the first few dominant paths usually contribute the largest share of channel energy and downstream beam behavior.
+
+\section{Mixed-Scenario Pretraining, Scenario Finetuning, and kNN Awareness}
+\subsection{Why Pretrain Across Scenarios?}
+If the goal is transferable wireless inference, then a model trained on one scene alone is too narrow. Mixed-scenario pretraining exposes the model to broader combinations of geometry, visibility, blockage, and multipath richness. Let $\{\mathcal{D}_m\}_{m=1}^{M}$ denote the scenario datasets. We pretrain on
+\begin{equation}
+\mathcal{D}_{\mathrm{pre}} = \bigcup_{m=1}^{M} \mathcal{D}_m,
+\end{equation}
+then finetune on a target scenario $\mathcal{D}_{\mathrm{tar}}$. In code, this is implemented through mixed-scenario dataloading and a cluster-aware memory pathway that can optionally mask direct prompt positions during pretraining, encouraging the model to learn nontrivial propagation priors from shared scenario structure rather than memorizing only coordinate mappings.
+
+This stage is the analogue of large-corpus pretraining in language or multimodal models: it builds a general representation before task- or domain-specific adaptation.
+
+\subsection{kNN-Aware Retrieval as Propagation Memory}
+We additionally propose a kNN-aware PathFormer to inject scenario-local regularities at inference time. For each scenario, we compute per-step cluster statistics over path features such as delay and power. For a training user $i$, this produces a retrieved sequence
+\begin{equation}
+\mathbf{r}^{(i)}_{1:T_r}
+=
+\{[\bm{\mu}^{(i)}_t,\bm{\sigma}^{(i)}_t]\}_{t=1}^{T_r},
+\end{equation}
+where $\bm{\mu}^{(i)}_t$ and $\bm{\sigma}^{(i)}_t$ are the cluster center and spread assigned to path step $t$.
+
+At test time, given a query receiver position, we retrieve the nearest training user within the same scenario:
+\begin{equation}
+i^{\star}
+=
+\arg\min_{i \in \mathcal{D}_{\mathrm{tar}}^{\mathrm{train}}}
+\|\mathbf{x}^{(q)}_{\mathrm{rx}} - \mathbf{x}^{(i)}_{\mathrm{rx}}\|_2,
+\end{equation}
+and use $\mathbf{r}^{(i^{\star})}_{1:T_r}$ as auxiliary memory. This design is analogous to kNN-LM or RETRO in that the model conditions on a retrieved neighborhood summary \cite{knnlm,retro}, but our retrieval object is physical rather than textual.
+
+We study two integration modes:
+\begin{enumerate}[leftmargin=1.5em]
+    \item \textbf{Prompt augmentation:} retrieved statistics are pooled and added to the geometry prompt.
+    \item \textbf{Memory augmentation:} retrieved statistics are embedded as additional transformer memory tokens.
+\end{enumerate}
+
+\subsection{Why Multiscenario Pretraining Should Beat Pure Retrieval}
+Retrieval and pretraining solve different problems. The kNN-aware model supplies local scenario hints, but it does not by itself create broad transferable propagation knowledge. In contrast, mixed-scenario pretraining lets the model amortize common multipath structure across many environments before target-specific adaptation. Our main comparison therefore tests whether broad prior knowledge plus target finetuning provides larger gains than local retrieval alone.
+
+\section{From Generated Paths to Downstream Wireless Tasks}
+The strongest version of the paper is not just that PathFormer predicts paths accurately. It is that the \emph{same path generator} supports multiple downstream tasks under realistic rollout conditions.
+
+\subsection{Generated Hidden States as Transferable Representations}
+Let $\mathbf{h}^{\mathrm{gen}}_{1:T}$ denote hidden states obtained from the model's own autoregressive rollout, rather than from teacher-forced oracle paths. We aggregate them using
+\begin{equation}
+\bar{\mathbf{h}}
+=
+\mathrm{Pool}(\mathbf{h}^{\mathrm{gen}}_{1:T}),
+\qquad
+\mathrm{Pool} \in \{\text{first},\text{last},\text{mean}\}.
+\end{equation}
+This generated hidden representation is the key transfer interface for downstream tasks. Using generated rather than oracle hidden states keeps training and inference aligned and prevents downstream improvements from depending on path supervision that is unavailable at deployment time.
+
+\subsection{Channel Reconstruction from Generated Embeddings}
+For channel prediction, we use a frozen or partially finetuned PathFormer backbone and a lightweight channel head:
+\begin{equation}
+\hat{\mathbf{H}} = f_{\mathrm{ch}}(\bar{\mathbf{h}}).
+\end{equation}
+The channel head may predict the complex channel tensor directly from pooled generated hidden states, or predicted paths may be mapped through a differentiable physical channel generator. This task is central because it measures whether the learned representation preserves enough physical detail to reconstruct the observable channel from an internal path-based state.
+
+\subsection{Beam Prediction and Zero-Shot Beam Selection}
+For beam prediction, we attach a classifier head
+\begin{equation}
+\hat{\mathbf{y}}_{\mathrm{beam}} = f_{\mathrm{beam}}(\bar{\mathbf{h}})
+\end{equation}
+and evaluate top-$1$/top-$k$ accuracy. We additionally study a zero-shot beam-selection task that uses the first predicted dominant path angle to score a DFT beam codebook:
+\begin{equation}
+\hat{b}
+=
+\arg\max_{b}
+\left|
+\mathbf{s}_b^{H}
+\mathbf{a}(\hat{\theta}^{\mathrm{az}}_1,\hat{\theta}^{\mathrm{el}}_1)
+\right|^2,
+\end{equation}
+where $\mathbf{a}(\cdot,\cdot)$ is the predicted steering vector and $\mathbf{s}_b$ is beam $b$ in the codebook. This zero-shot test is deliberately strict because it evaluates whether the generated dominant path is useful even without training an explicit beam classifier.
+
+\subsection{User Localization}
+For localization, a small regression head predicts receiver coordinates from the pooled path representation:
+\begin{equation}
+\hat{\mathbf{x}}_{\mathrm{rx}} = f_{\mathrm{loc}}(\bar{\mathbf{h}}).
+\end{equation}
+This task matters because it inverts the usual geometry-to-propagation direction. If the same representation works for both forward physical prediction (channel, beam) and inverse geometric inference (localization), then it is more likely that the model has learned scene structure rather than overfitting one output space.
+
+\section{Experimental Protocol}
+\subsection{Scenarios and Training Regimes}
+We train and evaluate on a collection of urban wireless scenarios spanning multiple cities and layout types. The experiments should report three main regimes:
+\begin{enumerate}[leftmargin=1.5em]
+    \item \textbf{Ordinary PathFormer:} single-scenario supervised training from scratch.
+    \item \textbf{kNN-aware PathFormer:} single-scenario training with retrieved cluster-statistic memory.
+    \item \textbf{Pretrained PathFormer:} mixed-scenario pretraining followed by target-scenario finetuning.
+\end{enumerate}
+The target-conference version of the paper should present this comparison consistently across all scenarios, not only on one representative city.
+
+\subsection{Path Prediction Metrics}
+The base task reports:
+\begin{itemize}[leftmargin=1.5em]
+    \item RMSE and MAE for delay and power,
+    \item circular RMSE and MAE for phase and angles,
+    \item path-count RMSE,
+    \item interaction accuracy and F1,
+    \item error as a function of path index.
+\end{itemize}
+The path-index plots are essential. If next-path prediction is the right abstraction, PathFormer should be strongest on the dominant early paths and degrade gracefully on weaker tails.
+
+\subsection{Downstream Metrics}
+For downstream tasks, we recommend:
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Channel reconstruction:} NMSE and channel-quality score.
+    \item \textbf{Beam prediction:} top-$1$ and top-$k$ accuracy, plus zero-shot beam accuracy from the first predicted path.
+    \item \textbf{Localization:} mean distance error.
+\end{itemize}
+
+\subsection{Critical Ablations}
+To make the paper convincing at a top venue, the following ablations should be mandatory:
+\begin{itemize}[leftmargin=1.5em]
+    \item generated hidden states versus teacher-forced oracle hidden states,
+    \item ordinary PathFormer versus kNN-aware PathFormer versus multiscenario pretraining,
+    \item prompt augmentation versus memory augmentation for retrieval,
+    \item with and without interaction labels,
+    \item pooling strategy for generated hidden states,
+    \item few-shot target-scenario finetuning curves.
+\end{itemize}
+
+\subsection{What the Main Table Should Show}
+The central comparison table should directly test the paper's thesis:
+\begin{center}
+\emph{multiscenario pretraining + target finetuning}
+$\geq$
+\emph{kNN-aware PathFormer}
+$\geq$
+\emph{ordinary single-scenario PathFormer}.
+\end{center}
+That ordering should be shown first on path prediction and then on downstream transfer. If the ordering holds on channel reconstruction, beam prediction, and localization as well, the paper's foundation-model claim becomes much stronger.
+
+\section{Discussion}
+\subsection{Why Path-Level Modeling Complements Channel-Level Foundation Models}
+Our goal is not to argue that channel-level foundation models are misguided. They are valuable and increasingly successful \cite{lwm,wifo,csiclip,channelgpt,contrawimae}. Rather, we argue that they operate at a later stage of the physical pipeline. PathFormer provides a complementary representation level that is more structured, more interpretable, and often more naturally shared across tasks that depend on propagation geometry.
+
+\subsection{Why the Language-Model Analogy Is Useful}
+The analogy to next-token prediction is more than rhetorical. It suggests a concrete recipe:
+\begin{itemize}[leftmargin=1.5em]
+    \item choose a meaningful sequential representation,
+    \item train autoregressively on large heterogeneous corpora,
+    \item expose hidden states as a reusable interface for transfer.
+\end{itemize}
+For wireless propagation, path tokens play the role of structured units, multiscenario training plays the role of broad pretraining, and generated hidden states play the role of reusable embeddings.
+
+\subsection{Limitations}
+There are also important limitations. First, path labels are available in simulation or ray-tracing pipelines more readily than in over-the-air deployments. Second, sorting by power imposes one ordering among several possible orderings. Third, path prediction errors may compound during long autoregressive rollouts. These are precisely why generated-state evaluation, oracle-gap analysis, and cross-scenario robustness matter so much in the final paper.
+
+\section{Conclusion}
+This paper reframes wireless foundation modeling around \emph{next-path prediction}. Instead of learning only from CSI or CIR tensors, PathFormer learns to generate the underlying propagation paths that give rise to those observations. This path-centric view yields a physically grounded generative objective, a natural analogy to next-token prediction, a multimodal encoder--decoder interpretation, and a clean transfer interface through generated hidden states.
+
+The resulting research agenda is coherent and testable: pretrain across scenarios, finetune for target environments, augment with kNN-aware scenario memory when useful, and evaluate whether the learned propagation representation transfers to channel reconstruction, beam prediction, zero-shot beam selection, and localization. If the main comparisons confirm that mixed-scenario pretraining and generated-state transfer consistently outperform scratch-trained and purely local alternatives, then PathFormer offers a strong path-level foundation-model perspective for future wireless learning.
+
+% TODO for camera-ready:
+% 1. Add a system figure: geometry/environment/retrieval -> generated paths -> hidden states -> downstream tasks.
+% 2. Add a main comparison table with ordinary vs kNN-aware vs pretrained PathFormer.
+% 3. Add oracle-vs-generated hidden state ablations.
+% 4. Add per-path-index error plots and qualitative path visualizations.
+
+\begin{thebibliography}{99}
+
+\bibitem{vaswani}
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin.
+\newblock Attention Is All You Need.
+\newblock In \emph{NeurIPS}, 2017.
+
+\bibitem{gpt3}
+Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al.
+\newblock Language Models are Few-Shot Learners.
+\newblock In \emph{NeurIPS}, 2020.
+\newblock \url{https://arxiv.org/abs/2005.14165}
+
+\bibitem{lwm}
+Sadjad Alikhani, Gouranga Charan, and Ahmed Alkhateeb.
+\newblock Large Wireless Model (LWM): A Foundation Model for Wireless Channels.
+\newblock \emph{arXiv preprint arXiv:2411.08872}, 2024.
+\newblock \url{https://arxiv.org/abs/2411.08872}
+
+\bibitem{wifo}
+Boxun Liu, Shijian Gao, Xuanyu Liu, Xiang Cheng, and Liuqing Yang.
+\newblock WiFo: Wireless Foundation Model for Channel Prediction.
+\newblock \emph{arXiv preprint arXiv:2412.08908}, 2024.
+\newblock \url{https://arxiv.org/abs/2412.08908}
+
+\bibitem{csiclip}
+Jun Jiang, Wenjun Yu, Yunfan Li, Yuan Gao, and Shugong Xu.
+\newblock A MIMO Wireless Channel Foundation Model via CIR-CSI Consistency.
+\newblock \emph{arXiv preprint arXiv:2502.11965}, 2025.
+\newblock \url{https://arxiv.org/abs/2502.11965}
+
+\bibitem{channelgpt}
+Li Yu, Lianzheng Shi, Jianhua Zhang, Zhen Zhang, Yuxiang Zhang, and Guangyi Liu.
+\newblock ChannelGPT: A Large Model toward Real-World Channel Foundation Model for 6G Environment Intelligence Communication.
+\newblock \emph{IEEE Communications Magazine}, 63(10):68--74, 2025.
+\newblock \url{https://dblp.org/rec/journals/cm/YuSZZZL25.html}
+
+\bibitem{contrawimae}
+Berkay Guler, Giovanni Geraci, and Hamid Jafarkhani.
+\newblock A Multi-Task Foundation Model for Wireless Channel Representation Using Contrastive and Masked Autoencoder Learning.
+\newblock \emph{arXiv preprint arXiv:2505.09160}, 2025.
+\newblock \url{https://arxiv.org/abs/2505.09160}
+
+\bibitem{knnlm}
+Urvashi Khandelwal, Angela Fan, Dan Jurafsky, Luke Zettlemoyer, and Mike Lewis.
+\newblock Generalization through Memorization: Nearest Neighbor Language Models.
+\newblock In \emph{ICLR}, 2020.
+\newblock \url{https://arxiv.org/abs/1911.00172}
+
+\bibitem{retro}
+Sebastian Borgeaud, Arthur Mensch, Jordan Hoffmann, Trevor Cai, Eliza Rutherford, Katie Millican, George van den Driessche, Jean-Baptiste Lespiau, Bogdan Damoc, Aidan Clark, et al.
+\newblock Improving Language Models by Retrieving from Trillions of Tokens.
+\newblock In \emph{ICML}, 2022.
+\newblock \url{https://arxiv.org/abs/2112.04426}
+
+\bibitem{flamingo}
+Jean-Baptiste Alayrac, Jeff Donahue, Pauline Luc, Antoine Miech, Iain Barr, Yana Hasson, Karel Lenc, Arthur Mensch, Katie Millican, Malcolm Reynolds, et al.
+\newblock Flamingo: a Visual Language Model for Few-Shot Learning.
+\newblock In \emph{NeurIPS}, 2022.
+\newblock \url{https://arxiv.org/abs/2204.14198}
+
+\bibitem{blip2}
+Junnan Li, Dongxu Li, Silvio Savarese, and Steven Hoi.
+\newblock BLIP-2: Bootstrapping Language-Image Pre-training with Frozen Image Encoders and Large Language Models.
+\newblock In \emph{ICML}, 2023.
+\newblock \url{https://arxiv.org/abs/2301.12597}
+
+\bibitem{palme}
+Danny Driess, Federico Xia, Mehdi Sajjadi, Corey Lynch, Aakanksha Chowdhery, Brian Ichter, Alexander Kirillov, Pierre Sermanet, Andy Zeng, Jonathan Tompson, et al.
+\newblock PaLM-E: An Embodied Multimodal Language Model.
+\newblock In \emph{ICML}, 2023.
+\newblock \url{https://arxiv.org/abs/2303.03378}
+
+\end{thebibliography}
+
+\end{document}

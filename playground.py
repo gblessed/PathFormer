@@ -968,7 +968,7 @@ for scenario in all_scenarios:
         "PAD_VALUE": 0,
         "USE_WANDB": False,
         "LR": 2e-5,
-        "epochs": 100,
+        "epochs": 300,
         "interaction_weight": 0.01,
         "experiment": f"delay_only_enc_direct_{scenario}_interacaction_all_inter_str_dec_all_repeat",
         "hidden_dim": 512,
@@ -1185,4 +1185,35 @@ results = evaluate_model(model, val_loader, pad_value=config["PAD_VALUE"], data_
 
 
 # %%
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

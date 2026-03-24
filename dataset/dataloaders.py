@@ -381,6 +381,8 @@ class PreTrainMySeqDataLoader(torch.utils.data.Dataset):
                     break
                 elif k == "delay":
                     value = value * 1e6  # convert to us
+                    
+                    
 
                 elif k == "phase":
                     value = value * (np.pi/180)

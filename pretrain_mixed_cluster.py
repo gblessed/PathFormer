@@ -26,7 +26,7 @@ from tqdm import tqdm
 import math
 # from utils import (generate_channels_and_labels, tokenizer_train, tokenizer, make_sample, nmse_loss,
                 #    create_train_dataloader, patch_maker, count_parameters, train_lwm)
-
+import argparse
 import numpy as np
 # import pretrained_model  # Assuming this contains the LWM model definition
 import matplotlib.pyplot as plt
@@ -49,89 +49,9 @@ import wandb
 from utils.utils import *
 from models_play import PathDecoder, GPTPathDecoder, GPTPathDecoderEnv, PathDecoderEnv
 # %%
-all_scenarios = os.listdir('deepmimo_scenarios')
-
-
-all_scenarios = ['city_47_chicago_3p5', 'city_23_beijing_3p5', 'city_91_xiangyang_3p5', 'city_17_seattle_3p5_s', 'city_12_fortworth_3p5', 'city_92_sãopaulo_3p5', 'city_35_san_francisco_3p5', 'city_10_florida_villa_7gp_1758095156175', 'city_19_oklahoma_3p5_s', 'city_74_chiyoda_3p5']
-all_scenarios  = ['city_0_newyork_3p5'] + all_scenarios
-random.shuffle(all_scenarios)
-
-
-config = {
-    "BATCH_SIZE":128,
-    "PAD_VALUE": 0,
-    "USE_WANDB": True,
-    "LR":2e-5,
-    "epochs" : 50,
-    "interaction_weight": 0.01,  # Weight for interaction loss
-    # "experiment": "interacaction_power_only_dec_only",
-
-    # "experiment": f"pre_train_all_scenarios_interaction_weight_0.01_better_scheduler",
-    "experiment": f"cluster_noisy_pretrain",
-    # "hidden_dim": 512,
-    # "n_layers": 6,
-    # "n_heads": 4,
-    "hidden_dim": 512,
-    "n_layers": 8,
-    "n_heads": 8,
-    "pre_train": True,
-    "use_cluster_conditioning": True,
-    "n_clusters": 5,
-    "max_path_len_clusters": 25,
-    "cluster_features": ["delay", "power"],
-    # Target noise for generalization: probability and per-parameter (mean, std)
-    "TARGET_NOISE_PROB": 0.2,
-    "TARGET_NOISE_PARAMS": None,  # None = use add_noise_to_paths defaults; or e.g. {"delay": {"mean": 0, "std": 0.05}, "power": {"mean": 0, "std": 0.002}, "phase": {"mean": 0, "std": 0.1}, "aoa_az": {"mean": 0, "std": 0.08}, "aoa_el": {"mean": 0, "std": 0.04}}}
-}
 
 
 
-
-
-# # add %%
-# bad_scenarios = []
-# for scenario in all_scenarios[:1]:
-
-    
-#     try:
-#         # %%
-#         print(f"Processing scenario: {scenario}")
-#         dataset = dm.load(scenario, )
-#         print(f"Loaded scenario: {scenario}")
-
-#         # %%
-#         train_data  = MySeqDataLoader(dataset, train=True, split_by="user", sort_by="power")
-
-#         train_loader = torch.utils.data.DataLoader(
-#             dataset     = train_data,
-#             batch_size  = config['BATCH_SIZE'],
-#             shuffle     = True,
-#             collate_fn= train_data.collate_fn
-#             )
-#         val_data  = MySeqDataLoader(dataset, train=False, split_by="user", sort_by="power")
-#         val_loader = torch.utils.data.DataLoader(
-#             dataset     = val_data,
-#             batch_size  = config['BATCH_SIZE'],
-#             shuffle     = False,
-#             collate_fn= val_data.collate_fn
-#             )
-
-#         for item in train_loader:
-#             print(f"Prompt shape: {item[0].shape}, Paths shape: {item[1].shape}, Num paths shape: {item[2].shape} , Interactions shape: {item[3].shape}, Environment shape: {item[4].shape} Environment Material Props shape: {item[5].shape} ")
-
-#         # %%
-#             print("No. of Train Points   : ", train_data.__len__())
-#             print("Batch Size           : ", config["BATCH_SIZE"])
-#             print("Train Batches        : ", train_loader.__len__())
-#             print("No. of Train Points   : ", val_data.__len__())
-#             print("Val Batches          : ", val_loader.__len__())
-#             break
-#         del dataset
-#     except Exception as e:
-#         bad_scenarios.append(scenario)
-#         print(f"Error loading scenario {scenario}: {e}")
-#         continue
-    # %%
 
 def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
     model.eval()
@@ -372,52 +292,65 @@ def _collect_step_vectors_from_base_dataset(base_dataset, feature_keys, max_path
     )
 
 
+def _scenario_env_signature(env_tensor, decimals=6):
+    env_np = np.asarray(env_tensor, dtype=np.float32).reshape(-1)
+    return tuple(np.round(env_np, decimals=decimals).tolist())
+
+
 def compute_feature_kmeans_cluster_stats_for_concat_dataset(concat_dataset, feature_keys, max_path_len=26, n_clusters=4, random_state=42):
     """
-    Compute step-wise KMeans centers/std on the mixed training dataset.
+    Compute step-wise KMeans centers/std separately for each scenario dataset.
     """
     n_features = len(feature_keys)
-    global_step_vectors = [[] for _ in range(max_path_len)]
+    scenario_cluster_stats = {}
     for wrapped in concat_dataset.datasets:
         base = wrapped.base_dataset if hasattr(wrapped, "base_dataset") else wrapped
         _, _, _, step_vectors = _collect_step_vectors_from_base_dataset(base, feature_keys, max_path_len)
+        env_signature = _scenario_env_signature(base[0][4].cpu().numpy())
+        scenario_name = getattr(wrapped, "scenario_name", f"scenario_{len(scenario_cluster_stats)}")
+
+        centers = np.zeros((max_path_len, n_clusters, n_features), dtype=np.float32)
+        stds = np.zeros((max_path_len, n_clusters, n_features), dtype=np.float32)
         for t in range(max_path_len):
-            global_step_vectors[t].extend(step_vectors[t])
+            arr = np.array(step_vectors[t], dtype=np.float32)
+            if len(arr) == 0:
+                continue
+            if len(arr) < n_clusters:
+                reps = [arr[min(i, len(arr) - 1)] for i in range(n_clusters)]
+                c = np.stack(reps, axis=0)
+                s = np.stack([np.std(arr, axis=0)] * n_clusters, axis=0)
+            else:
+                km = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
+                labels = km.fit_predict(arr)
+                c = km.cluster_centers_.astype(np.float32)
+                s = np.zeros_like(c)
+                for k in range(n_clusters):
+                    pts = arr[labels == k]
+                    if len(pts) > 0:
+                        s[k] = np.std(pts, axis=0)
+            centers[t] = c
+            stds[t] = s
+        scenario_cluster_stats[scenario_name] = {
+            "env_signature": env_signature,
+            "centers": centers,
+            "stds": stds,
+        }
+    return scenario_cluster_stats
 
-    centers = np.zeros((max_path_len, n_clusters, n_features), dtype=np.float32)
-    stds = np.zeros((max_path_len, n_clusters, n_features), dtype=np.float32)
-    for t in range(max_path_len):
-        arr = np.array(global_step_vectors[t], dtype=np.float32)
-        if len(arr) == 0:
-            continue
-        if len(arr) < n_clusters:
-            reps = [arr[min(i, len(arr) - 1)] for i in range(n_clusters)]
-            c = np.stack(reps, axis=0)
-            s = np.stack([np.std(arr, axis=0)] * n_clusters, axis=0)
-        else:
-            km = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
-            labels = km.fit_predict(arr)
-            c = km.cluster_centers_.astype(np.float32)
-            s = np.zeros_like(c)
-            for k in range(n_clusters):
-                pts = arr[labels == k]
-                if len(pts) > 0:
-                    s[k] = np.std(pts, axis=0)
-        centers[t] = c
-        stds[t] = s
-    return centers, stds
 
-
-def precompute_train_cluster_center_std_sequences_for_concat_dataset(concat_dataset, cluster_centers, cluster_stds, feature_keys, max_path_len=26):
+def precompute_train_cluster_center_std_sequences_for_concat_dataset(concat_dataset, scenario_cluster_stats, feature_keys, max_path_len=26):
     """
-    Build NN-retrievable per-sample sequence of nearest cluster center+std.
+    Build NN-retrievable per-sample sequence of nearest cluster center+std for each scenario.
     """
     n_features = len(feature_keys)
-    all_rx = []
-    all_center_std = []
-    all_valid = []
+    scenario_lookup_data = {}
     for wrapped in concat_dataset.datasets:
         base = wrapped.base_dataset if hasattr(wrapped, "base_dataset") else wrapped
+        scenario_name = getattr(wrapped, "scenario_name", None)
+        if scenario_name not in scenario_cluster_stats:
+            continue
+        cluster_centers = scenario_cluster_stats[scenario_name]["centers"]
+        cluster_stds = scenario_cluster_stats[scenario_name]["stds"]
         rx_xy, seq_vectors, valid_lens, _ = _collect_step_vectors_from_base_dataset(base, feature_keys, max_path_len)
         N = seq_vectors.shape[0]
         out = np.zeros((N, max_path_len, 2 * n_features), dtype=np.float32)
@@ -430,36 +363,39 @@ def precompute_train_cluster_center_std_sequences_for_concat_dataset(concat_data
                 nn = int(np.argmin(dist))
                 out[i, t, :n_features] = cluster_centers[t, nn]
                 out[i, t, n_features:] = cluster_stds[t, nn]
-        all_rx.append(rx_xy)
-        all_center_std.append(out)
-        all_valid.append(valid_lens)
+        scenario_lookup_data[scenario_name] = {
+            "env_signature": scenario_cluster_stats[scenario_name]["env_signature"],
+            "train_rx_pos": rx_xy,
+            "train_cluster_center_std": out,
+            "train_valid_len": valid_lens,
+        }
 
-    if len(all_rx) == 0:
-        return (
-            np.zeros((0, 2), dtype=np.float32),
-            np.zeros((0, max_path_len, 2 * n_features), dtype=np.float32),
-            np.zeros((0,), dtype=np.int64),
-        )
-    return (
-        np.concatenate(all_rx, axis=0),
-        np.concatenate(all_center_std, axis=0),
-        np.concatenate(all_valid, axis=0),
-    )
+    return scenario_lookup_data
 
 
-def lookup_cluster_center_std_by_position(prompts, train_rx_pos, train_cluster_center_std, train_valid_len, device, prompt_rx_slice=(3, 5)):
+def lookup_cluster_center_std_by_position(prompts, env, scenario_lookup_data, device, prompt_rx_slice=(3, 5)):
     B = prompts.shape[0]
     rx_query = prompts[:, prompt_rx_slice[0]:prompt_rx_slice[1]].detach().cpu().numpy()
-    max_T = train_cluster_center_std.shape[1]
-    D = train_cluster_center_std.shape[2]
+    if not scenario_lookup_data:
+        return None, None
+    first_lookup = next(iter(scenario_lookup_data.values()))
+    max_T = first_lookup["train_cluster_center_std"].shape[1]
+    D = first_lookup["train_cluster_center_std"].shape[2]
     batch = np.zeros((B, max_T, D), dtype=np.float32)
     pad_mask = np.ones((B, max_T), dtype=bool)
-    if train_rx_pos.shape[0] == 0:
-        return (
-            torch.tensor(batch, dtype=torch.float32, device=device),
-            torch.tensor(pad_mask, dtype=torch.bool, device=device),
-        )
+    scenario_lookup_by_env = {
+        lookup["env_signature"]: lookup for lookup in scenario_lookup_data.values()
+    }
     for b in range(B):
+        env_signature = _scenario_env_signature(env[b].detach().cpu().numpy())
+        scenario_lookup = scenario_lookup_by_env.get(env_signature)
+        if scenario_lookup is None:
+            continue
+        train_rx_pos = scenario_lookup["train_rx_pos"]
+        train_cluster_center_std = scenario_lookup["train_cluster_center_std"]
+        train_valid_len = scenario_lookup["train_valid_len"]
+        if train_rx_pos.shape[0] == 0:
+            continue
         pos_b = rx_query[b]
         dist = np.sqrt(np.sum((train_rx_pos - pos_b) ** 2, axis=1))
         nn_idx = int(np.argmin(dist))
@@ -503,51 +439,242 @@ class PathDecoderEnvClusterEncoderAdapter(nn.Module):
         prompts_aug = prompts + self.cluster_to_prompt(cluster_summary)
         return self.backbone(prompts_aug, paths, interactions, environment_properties, environment, pre_train)
 
-# model = PathDecoder().to(device)
-# model = PathDecoder(hidden_dim=config["hidden_dim"], n_layers = config["n_layers"], n_heads=config["n_heads"]).to(device)
-backbone_model = PathDecoderEnv(hidden_dim=config["hidden_dim"], n_layers = config["n_layers"], n_heads=config["n_heads"]).to(device)
-model = PathDecoderEnvClusterEncoderAdapter(
-    backbone=backbone_model,
-    hidden_dim=config["hidden_dim"],
-    cluster_feature_dim=2 * len(config.get("cluster_features", ["delay", "power", "aoa_az", "aoa_el", "phase"])),
-    prompt_dim=6,
-).to(device)
-print("Total trainable parameters:", count_parameters(model))
+
+class PathDecoderClusterEncoderAttentionFix1(nn.Module):
+    """
+    Cluster-aware pretraining decoder that keeps cluster conditioning in memory
+    while zeroing TX/RX prompt positions during pretraining.
+    """
+    def __init__(
+        self,
+        prompt_dim=6,
+        hidden_dim=512,
+        n_layers=8,
+        n_heads=8,
+        cluster_feature_dim=None,
+        max_T=35,
+        prefix_len=4,
+        cluster_encoder_layers=2,
+        zero_prompt_positions_for_pretrain=True,
+    ):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.prompt_dim = prompt_dim
+        self.prefix_len = prefix_len
+        self.max_T = max_T
+        self.zero_prompt_positions_for_pretrain = zero_prompt_positions_for_pretrain
+
+        self.cluster_embed = nn.Sequential(
+            nn.Linear(cluster_feature_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+        )
+        self.prompt_to_prefix = nn.Linear(prompt_dim, prefix_len * hidden_dim)
+        self.path_in = nn.Linear(12, hidden_dim)
+        self.pos_emb = nn.Embedding(max_T + 64, hidden_dim)
+        self.cluster_pos_emb = nn.Embedding(max_T, hidden_dim)
+        self.memory_pos_emb = nn.Embedding(prefix_len + max_T, hidden_dim)
+        self.environment_embed = nn.Linear(4, hidden_dim)
+        self.environment_prop_embed = nn.Linear(6, hidden_dim)
+        self.interaction_head = nn.Linear(hidden_dim, 4)
+
+        cluster_encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=n_heads,
+            dim_feedforward=4 * hidden_dim,
+            batch_first=True,
+        )
+        self.cluster_encoder = nn.TransformerEncoder(cluster_encoder_layer, num_layers=cluster_encoder_layers)
+        self.cluster_norm = nn.LayerNorm(hidden_dim)
+
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=hidden_dim,
+            nhead=n_heads,
+            dim_feedforward=4 * hidden_dim,
+            batch_first=True,
+        )
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=n_layers)
+
+        self.out_delay = nn.Sequential(nn.Linear(hidden_dim, 1), nn.Sigmoid())
+        self.out_power = nn.Sequential(nn.Linear(hidden_dim, 1))
+        self.out = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 6),
+            nn.Tanh(),
+        )
+        self.pathcount_head = nn.Sequential(
+            nn.Linear(prefix_len * hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def _prepare_prompts(self, prompts, pre_train=False):
+        if pre_train and self.zero_prompt_positions_for_pretrain:
+            prompts = prompts.clone()
+            prompts[:, :self.prompt_dim] = 0.0
+        return prompts
+
+    def _build_memory(self, prompts, cluster_center_std=None, cluster_pad_mask=None, pre_train=False):
+        batch_size = prompts.size(0)
+        device = prompts.device
+
+        prompts = self._prepare_prompts(prompts, pre_train=pre_train)
+        prefix = self.prompt_to_prefix(prompts).view(batch_size, self.prefix_len, self.hidden_dim)
+        prefix_mask = torch.zeros(batch_size, self.prefix_len, dtype=torch.bool, device=device)
+
+        if cluster_center_std is None:
+            cluster_tokens = prefix.new_zeros(batch_size, 0, self.hidden_dim)
+            cluster_pad_mask = torch.zeros(batch_size, 0, dtype=torch.bool, device=device)
+        else:
+            cluster_tokens = self.cluster_embed(cluster_center_std)
+            if cluster_pad_mask is None:
+                cluster_pad_mask = torch.zeros(
+                    batch_size,
+                    cluster_tokens.size(1),
+                    dtype=torch.bool,
+                    device=device,
+                )
+            else:
+                cluster_pad_mask = cluster_pad_mask.to(device=device, dtype=torch.bool)
+
+            cluster_pos = self.cluster_pos_emb(torch.arange(cluster_tokens.size(1), device=device)).unsqueeze(0)
+            cluster_tokens = cluster_tokens + cluster_pos
+            safe_cluster_pad_mask = cluster_pad_mask.clone()
+            if safe_cluster_pad_mask.size(1) > 0:
+                all_padded = safe_cluster_pad_mask.all(dim=1)
+                safe_cluster_pad_mask[all_padded, 0] = False
+                cluster_tokens[all_padded] = 0.0
+            cluster_tokens = self.cluster_encoder(
+                cluster_tokens,
+                src_key_padding_mask=safe_cluster_pad_mask,
+            )
+            cluster_tokens = self.cluster_norm(cluster_tokens)
+
+        memory = torch.cat([prefix, cluster_tokens], dim=1)
+        memory_pos = self.memory_pos_emb(torch.arange(memory.size(1), device=device)).unsqueeze(0)
+        memory = memory + memory_pos
+        memory_mask = torch.cat([prefix_mask, cluster_pad_mask], dim=1)
+        return prefix, memory, memory_mask
+
+    def forward(self, prompts, paths, interactions, environment_properties, environment, pre_train, cluster_center_std=None, cluster_pad_mask=None):
+        batch_size, path_len, _ = paths.shape
+        prefix, memory, memory_mask = self._build_memory(
+            prompts,
+            cluster_center_std=cluster_center_std,
+            cluster_pad_mask=cluster_pad_mask,
+            pre_train=pre_train,
+        )
+
+        env_embedding = self.environment_embed(environment).unsqueeze(1)
+        env_prop_embedding = self.environment_prop_embed(environment_properties)
+
+        phase = paths[:, :, 2]
+        sinp = torch.sin(phase)
+        cosp = torch.cos(phase)
+        aoa_az = paths[:, :, 3]
+        sin_az = torch.sin(aoa_az)
+        cos_az = torch.cos(aoa_az)
+        aoa_el = paths[:, :, 4]
+        sin_el = torch.sin(aoa_el)
+        cos_el = torch.cos(aoa_el)
+
+        x = torch.stack(
+            [paths[:, :, 0], paths[:, :, 1], sinp, cosp, sin_az, cos_az, sin_el, cos_el],
+            dim=-1,
+        )
+        interactions_clean = interactions.clone()
+        interactions_clean[interactions_clean == -1] = 0
+        x = torch.cat([x, interactions_clean], dim=-1)
+        x = self.path_in(x)
+        x = torch.cat([env_embedding, env_prop_embedding, x], dim=1)
+
+        total_len = x.size(1)
+        pos = self.pos_emb(torch.arange(total_len, device=x.device)).unsqueeze(0)
+        x = x + pos
+        causal_mask = torch.triu(torch.ones(total_len, total_len, device=x.device), diagonal=1).bool()
+
+        h = self.decoder(
+            tgt=x,
+            memory=memory,
+            tgt_mask=causal_mask,
+            memory_key_padding_mask=memory_mask,
+        )
+        h_paths = h[:, -(path_len):, :]
+
+        out = self.out(h_paths)
+        delay_pred = self.out_delay(h_paths).squeeze(-1)
+        power_pred = self.out_power(h_paths).squeeze(-1)
+        phase_sin_pred = out[:, :, 0]
+        phase_cos_pred = out[:, :, 1]
+        az_sin_pred = out[:, :, 2]
+        az_cos_pred = out[:, :, 3]
+        el_sin_pred = out[:, :, 4]
+        el_cos_pred = out[:, :, 5]
+
+        phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)
+        az_pred = torch.atan2(az_sin_pred, az_cos_pred)
+        el_pred = torch.atan2(el_sin_pred, el_cos_pred)
+        interaction_logits = self.interaction_head(h_paths)
+
+        prefix_flat = prefix.reshape(batch_size, -1)
+        pathcounts = self.pathcount_head(prefix_flat)
+
+        return (
+            delay_pred,
+            power_pred,
+            phase_sin_pred,
+            phase_cos_pred,
+            phase_pred,
+            az_sin_pred,
+            az_cos_pred,
+            az_pred,
+            el_sin_pred,
+            el_cos_pred,
+            el_pred,
+            pathcounts,
+            interaction_logits,
+        )
 
 
-# %%
-if config["USE_WANDB"]:
-    import wandb
 
-    wandb.init(
-        project="deepmimo-path-decoder",
-        config = config
-       
-    )
-
-
-
-optimizer = torch.optim.AdamW(model.parameters(), lr=config["LR"])
-# scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=2, mode="min")
-scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-    optimizer,
-    T_0=25,      # Restart every 10 epochs
-    T_mult=1,    # Double the period after each restart
-    eta_min=1e-8 # Minimum LR
-)
-
-# Initialize best checkpoint tracking (based on path_length loss)
-
-# scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=2, mode="min")
-pre_train = config.get("pre_train", True)
-best_val_loss = float('inf')
-checkpoint_path = f"{config['experiment']}_best_model_checkpoint.pth"
-os.makedirs("checkpoints20M", exist_ok=True)
-checkpoint_path = os.path.join("checkpoints20M", checkpoint_path)
 def train_with_interactions(model, config, task = None):
     """
     Modified training loop with interaction prediction.
     """
+    all_scenarios = os.listdir('deepmimo_scenarios')
+
+
+    all_scenarios = ['city_47_chicago_3p5', 'city_23_beijing_3p5', 'city_91_xiangyang_3p5', 'city_17_seattle_3p5_s', 'city_12_fortworth_3p5', 'city_92_sãopaulo_3p5', 'city_35_san_francisco_3p5', 'city_10_florida_villa_7gp_1758095156175', 'city_19_oklahoma_3p5_s', 'city_74_chiyoda_3p5']
+    all_scenarios  = ['city_0_newyork_3p5'] + all_scenarios
+    random.shuffle(all_scenarios)
+
+    pre_train = config.get("pre_train", True)
+    best_val_loss = float('inf')
+    checkpoint_path = f"{config['experiment']}_clusters_{config['n_clusters']}_best_model_checkpoint.pth"
+    os.makedirs("checkpoints20M", exist_ok=True)
+    checkpoint_path = os.path.join("checkpoints20M", checkpoint_path)
+
+
+
+    # %%
+
+
+
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config["LR"])
+    # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=2, mode="min")
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer,
+        T_0=25,      # Restart every 10 epochs
+        T_mult=1,    # Double the period after each restart
+        eta_min=1e-8 # Minimum LR
+    )
+
+
     # Create mixed dataloaders once at the beginning
     print("Creating mixed training dataloader...")
     train_loader = create_mixed_dataloader(all_scenarios[:], config, train=True)
@@ -559,21 +686,19 @@ def train_with_interactions(model, config, task = None):
         cluster_features = config.get("cluster_features", ["delay", "power", "aoa_az", "aoa_el", "phase"])
         n_clusters = config.get("n_clusters", 5)
         max_path_len_clusters = config.get("max_path_len_clusters", 25)
-        centers, stds = compute_feature_kmeans_cluster_stats_for_concat_dataset(
+        scenario_cluster_stats = compute_feature_kmeans_cluster_stats_for_concat_dataset(
             train_loader.dataset,
             feature_keys=cluster_features,
             max_path_len=max_path_len_clusters,
             n_clusters=n_clusters,
         )
-        train_rx_pos, train_cluster_center_std, train_valid_len = precompute_train_cluster_center_std_sequences_for_concat_dataset(
+        cluster_lookup_data = precompute_train_cluster_center_std_sequences_for_concat_dataset(
             train_loader.dataset,
-            cluster_centers=centers,
-            cluster_stds=stds,
+            scenario_cluster_stats=scenario_cluster_stats,
             feature_keys=cluster_features,
             max_path_len=max_path_len_clusters,
         )
-        cluster_lookup_data = (train_rx_pos, train_cluster_center_std, train_valid_len)
-        print(f"Prepared cluster center+std lookup for features={cluster_features}")
+        print(f"Prepared scenario-local cluster center+std lookup for features={cluster_features}")
     best_val_loss = float('inf')
     
 
@@ -622,9 +747,8 @@ def train_with_interactions(model, config, task = None):
             path_padding_mask = path_padding_mask.cuda()
             cluster_center_std, cluster_pad_mask = None, None
             if cluster_lookup_data is not None:
-                train_rx_pos, train_cluster_center_std, train_valid_len = cluster_lookup_data
                 cluster_center_std, cluster_pad_mask = lookup_cluster_center_std_by_position(
-                    prompts, train_rx_pos, train_cluster_center_std, train_valid_len, prompts.device
+                    prompts, env, cluster_lookup_data, prompts.device
                 )
 
             paths_in = paths[:, :-1, :]
@@ -719,9 +843,8 @@ def train_with_interactions(model, config, task = None):
                 path_padding_mask = path_padding_mask.cuda()
                 cluster_center_std, cluster_pad_mask = None, None
                 if cluster_lookup_data is not None:
-                    train_rx_pos, train_cluster_center_std, train_valid_len = cluster_lookup_data
                     cluster_center_std, cluster_pad_mask = lookup_cluster_center_std_by_position(
-                        prompts, train_rx_pos, train_cluster_center_std, train_valid_len, prompts.device
+                        prompts, env, cluster_lookup_data, prompts.device
                     )
 
                 paths_in = paths[:, :-1, :]
@@ -766,6 +889,7 @@ def train_with_interactions(model, config, task = None):
                     "inter": f"{loss_interaction.item():.4f}",  # NEW
 
                 })
+                break
 
         avg_val_loss = np.mean(val_losses)
         avg_val_delay = np.mean(val_loss_delay)
@@ -841,17 +965,17 @@ def train_with_mixed_scenarios(model, config):
     Modified training loop with mixed scenario batches
     """
 
-    
+
     # Create mixed dataloaders once at the beginning
     print("Creating mixed training dataloader...")
     train_loader = create_mixed_dataloader(all_scenarios, config, train=True)
-    
+
     print("Creating mixed validation dataloader...")
     val_loader = create_mixed_dataloader(all_scenarios, config, train=False)
-    
+
     best_val_loss = float('inf')
     checkpoint_path = f"{config['experiment']}_best_model_checkpoint.pth"
-    
+
     for epoch in range(config["epochs"]):
         # -------------------- TRAINING --------------------
         model.train()
@@ -877,13 +1001,13 @@ def train_with_mixed_scenarios(model, config):
             
             # Forward pass
             (delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
-             path_length_pred, interaction_logits) = model(
+                path_length_pred, interaction_logits) = model(
                 prompts, paths_in, interactions_in
             )
             
             # Compute loss
             (total_loss, loss_delay, loss_power, loss_phase,
-             loss_path_length, loss_interaction) = masked_loss_pre_train(
+                loss_path_length, loss_interaction) = masked_loss_pre_train(
                 delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
                 path_length_pred, interaction_logits, paths_out, path_lengths,
                 interactions_out, pad_value=config['PAD_VALUE'],
@@ -942,13 +1066,13 @@ def train_with_mixed_scenarios(model, config):
                 
                 # Forward pass
                 (delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
-                 path_length_pred, interaction_logits) = model(
+                    path_length_pred, interaction_logits) = model(
                     prompts, paths_in, interactions_in
                 )
                 
                 # Compute loss
                 (total_loss, loss_delay, loss_power, loss_phase,
-                 loss_path_length, loss_interaction) = masked_loss_pre_train(
+                    loss_path_length, loss_interaction) = masked_loss_pre_train(
                     delay_pred, power_pred, sin_pred, cos_pred, phase_pred,
                     path_length_pred, interaction_logits, paths_out, path_lengths,
                     interactions_out, pad_value=config['PAD_VALUE'],
@@ -1037,26 +1161,80 @@ def load_best_checkpoint(model, checkpoint_path="checkpoints2/best_model_checkpo
 
     print(f"✓ Loaded best checkpoint from epoch {epoch} (val_loss: {best_avg_val_loss:.4f})")
     return epoch, best_avg_val_loss
-# # torch.serialization.add_safe_globals([np._core.multiarray.scalar])
-# # torch.serialization.add_safe_globals([np.dtype])
 
-# # Load best checkpoint for inference/evaluation
-# best_epoch, best_loss = load_best_checkpoint(model, checkpoint_path=checkpoint_path)
+def run_pre_training(n_clusters=5):
 
-# train_with_interactions(model, config)
-# # %%
-# checkpoint_path
+
+
+    config = {
+        "BATCH_SIZE":256,
+        "PAD_VALUE": 0,
+        "USE_WANDB": True,
+        "LR":2e-5,
+        "epochs" : 50,
+        "interaction_weight": 0.01,  # Weight for interaction loss
+        # "experiment": "interacaction_power_only_dec_only",
+
+        # "experiment": f"pre_train_all_scenarios_interaction_weight_0.01_better_scheduler",
+        "experiment": f"cluster_noisy_pretrain",
+        # "hidden_dim": 512,
+        # "n_layers": 6,
+        # "n_heads": 4,
+        "hidden_dim": 512,
+        "n_layers": 8,
+        "n_heads": 8,
+        "pre_train": True,
+        "use_cluster_conditioning": True,
+        "n_clusters": n_clusters,
+        "max_path_len_clusters": 25,
+        "cluster_features": ["delay", "power"],
+        # Target noise for generalization: probability and per-parameter (mean, std)
+        "TARGET_NOISE_PROB": 0.2,
+        "TARGET_NOISE_PARAMS": None,  # None = use add_noise_to_paths defaults; or e.g. {"delay": {"mean": 0, "std": 0.05}, "power": {"mean": 0, "std": 0.002}, "phase": {"mean": 0, "std": 0.1}, "aoa_az": {"mean": 0, "std": 0.08}, "aoa_el": {"mean": 0, "std": 0.04}}}
+    }
+    model = PathDecoderClusterEncoderAttentionFix1(
+        hidden_dim=config["hidden_dim"],
+        n_layers=config["n_layers"],
+        n_heads=config["n_heads"],
+        cluster_feature_dim=2 * len(config.get("cluster_features", ["delay", "power", "aoa_az", "aoa_el", "phase"])),
+        prompt_dim=6,
+    ).to(device)
+    print("Total trainable parameters:", count_parameters(model))
+    print(f"N_clusters: {config['n_clusters']}")
+    # %%
+    if config["USE_WANDB"]:
+        import wandb
+
+        wandb.init(
+            project="deepmimo-path-decoder",
+            config = config
+        
+        )
+
+    train_with_interactions(model, config)
+
 
 # Usage:
-train_with_interactions(model, config)
+# 
 # # %%
 # print(evaluate_model(model, val_loader))
 
 
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train/evaluate the multiscenario direct training model.")
+    parser.add_argument("--n_clusters", type =int,  default=5)
+    return parser.parse_args()
+
+def main():
+    args = parse_args()
+    run_pre_training(args.n_clusters)
 # %%
 # show_example(model, val_loader, sample_index=24)
 
-
+if __name__ == "__main__":
+    main()
 
 ##################################################################################################
 
