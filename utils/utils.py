@@ -272,16 +272,16 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
         loss_power = ((power_pred - power_t)**2)[mask].mean()
         loss_sin = ((phase_sin_pred - sinp)**2)[mask].mean()
         loss_cos = ((phase_cos_pred - cosp)**2)[mask].mean()
-        loss_phase = (loss_sin + loss_cos) / 2
+        loss_phase = (loss_sin + loss_cos) / 2              
 
         # AoA losses
         loss_az_sin = ((az_sin_pred - sin_az_t)**2)[mask].mean()
         loss_az_cos = ((az_cos_pred - cos_az_t)**2)[mask].mean()
-        loss_az = (loss_az_sin + loss_az_cos) / 2
+        loss_az = (loss_az_sin + loss_az_cos) / 2               
 
         loss_el_sin = ((el_sin_pred - sin_el_t)**2)[mask].mean()
         loss_el_cos = ((el_cos_pred - cos_el_t)**2)[mask].mean()
-        loss_el = (loss_el_sin + loss_el_cos) / 2
+        loss_el = (loss_el_sin + loss_el_cos) / 2                 
 
     loss_path_length = ((path_length_targets - path_length_predict)**2).mean() * 0.0
     
@@ -908,3 +908,4 @@ def add_noise_to_paths(
     out[:, :, 4] = torch.where(replace_mask, wrap_angles(out[:, :, 4] + aoa_el_rad), out[:, :, 4])
 
     return out
+

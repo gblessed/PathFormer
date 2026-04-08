@@ -491,8 +491,8 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
 
     loss_delay = ((delay_pred - delay_t)**2)[mask].mean()
     loss_power = ((power_pred - power_t)**2)[mask].mean()
-    loss_sin = ((phase_sin_pred - sinp)**2)[mask].mean()
-    loss_cos = ((phase_cos_pred - cosp)**2)[mask].mean()
+    loss_sin = ((phase_sin_pred - sinp)**2)[mask].mean() * 0.0
+    loss_cos = ((phase_cos_pred - cosp)**2)[mask].mean()* 0.0
     loss_phase = (loss_sin + loss_cos) / 2
 
     # AoA losses

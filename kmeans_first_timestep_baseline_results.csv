@@ -1,0 +1,2 @@
+scenario,n_clusters,n_train_first_timestep,n_val_first_timestep,n_eval,n_skipped_no_tx_match,delay_rmse,power_rmse,joint_rmse
+city_47_chicago_3p5,50,22442,5646,5646,0,0.04545611888170242,1.9092682600021362,0.04930303618311882

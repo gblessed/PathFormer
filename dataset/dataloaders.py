@@ -3,6 +3,7 @@ from collections import defaultdict
 import numpy as np
 from torch.utils.data import Dataset, ConcatDataset, DataLoader
 import deepmimo as dm
+import numpy as np
 # %%
 class MySeqDataLoader(torch.utils.data.Dataset):
 
@@ -198,6 +199,9 @@ class MySeqDataLoader(torch.utils.data.Dataset):
 
 
 
+
+
+
 class PreTrainMySeqDataLoader(torch.utils.data.Dataset):
 
     def __init__(self, scenario, tx_sets="all", seed=42, shuffle=False, pad_value=0,
@@ -340,16 +344,28 @@ class PreTrainMySeqDataLoader(torch.utils.data.Dataset):
 
         for k in ["tx_pos", "rx_pos"]:
             # prompt.extend(self.dataset_filtered[k][idx])
-            if self.normalizers and "pos" in self.apply_normalizers:
+            if self.normalizers and "rx_pos" in self.apply_normalizers:
                 # vals =  (self.dataset_filtered[k][idx] - self.mins)/ ( self.maxs -  self.mins)
                 vals = self.dataset_filtered[k][idx]
-                vals = (vals -  self.normalizers["rx_pos"]["mean"])/ self.normalizers["rx_pos"]["std"]
+                vals[:2] = (vals[:2] -  self.normalizers["rx_pos"]["min"][:2])/ (self.normalizers["rx_pos"]["max"][:2] - self.normalizers["rx_pos"]["min"][:2])
+                vals[2] -= self.normalizers["rx_pos"]["min"][2]
                 prompt.extend( vals )
             
             else:
                 prompt.extend( self.dataset_filtered[k][idx] )
                 # prompt.extend( (self.dataset_filtered[k][idx] - self.mins)/ ( self.maxs -  self.mins) )
+        tx_pos = self.dataset_filtered["tx_pos"][idx]
+        rx_pos = self.dataset_filtered["rx_pos"][idx]
 
+        for i in range(len(tx_pos)):
+            dist = np.sqrt((tx_pos[i] - rx_pos[i]) **2) 
+            prompt.append(dist)
+        prompt.append(np.arctan2(prompt[-3], prompt[-2]))
+        
+   
+
+            
+        
 
 
 
@@ -442,6 +458,9 @@ class PreTrainMySeqDataLoader(torch.utils.data.Dataset):
         batch_environment_material_props = torch.nn.utils.rnn.pad_sequence([i[5] for i in batch], batch_first=True,
                                                            padding_value=0)
         return batch_prompts, batch_paths, batch_num_paths, batch_interactions, batch_environment, batch_environment_material_props, path_padding_mask
+
+
+
 
 
 
