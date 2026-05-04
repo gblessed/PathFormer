@@ -14,6 +14,7 @@ from multiscenario_direct_training_first_step_residual import (
     FirstStepResidualPathDecoder,
     all_scenarios,
     evaluate_model,
+    get_resume_checkpoint_path,
     load_best_checkpoint,
     resolve_scenarios,
     train_with_interactions,
@@ -167,6 +168,7 @@ def parse_args():
     parser.add_argument("--num-shards", type=int, default=None)
     parser.add_argument("--csv-log-file", type=str, default=csv_log_file)
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints_first_step_residual_corridor")
+    parser.add_argument("--noise-prob", type=float, default=0.0)
     parser.add_argument("--skip-train", action="store_true")
     parser.add_argument("--n-clusters", type=int, default=25)
     parser.add_argument("--nearest-k", type=int, default=5)
@@ -191,10 +193,12 @@ def run_scenario(scenario, args):
         "n_layers": 8,
         "n_heads": 8,
         "time_step_weighted": False,
+        "TARGET_NOISE_PROB": args.noise_prob,
+        "TARGET_NOISE_PARAMS": None,
     }
 
-    base_train = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power", normalizers=None, apply_normalizers=[], pad_value=config["PAD_VALUE"])
-    base_val = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power", normalizers=None, apply_normalizers=[], pad_value=config["PAD_VALUE"])
+    base_train = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power", normalizers=None, apply_normalizers=[], pad_value=config["PAD_VALUE"], include_aod=True)
+    base_val = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power", normalizers=None, apply_normalizers=[], pad_value=config["PAD_VALUE"], include_aod=True)
 
     scene_bank = SceneFeatureBank.from_dataset(dataset, use_material_features=args.use_material_features)
     train_aug_prompts, train_baselines, val_aug_prompts, val_baselines = build_first_step_assignments_with_corridor(
@@ -219,13 +223,51 @@ def run_scenario(scenario, args):
 
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     checkpoint_path = os.path.join(args.checkpoint_dir, f"{config['experiment']}_best_model_checkpoint.pth")
+    resume_checkpoint_path = get_resume_checkpoint_path(checkpoint_path)
 
     if not args.skip_train:
-        train_with_interactions(model, train_loader, val_loader, config, base_train, optimizer, scheduler, checkpoint_path)
+        train_with_interactions(model, train_loader, val_loader, config, base_train, optimizer, scheduler, checkpoint_path, resume_checkpoint_path=resume_checkpoint_path)
 
     _, best_loss = load_best_checkpoint(model, checkpoint_path)
     results = evaluate_model(model, val_loader)
-    avg_delay, avg_power, avg_phase, avg_az, avg_el, avg_path_length_rmse, avg_interaction_accuracy, avg_interaction_f1, avg_delay_mae, avg_power_mae, avg_phase_mae, avg_az_mae, avg_el_mae, avg_path_length_mae = results
+    (
+        avg_delay,
+        std_delay,
+        avg_power,
+        std_power,
+        avg_phase,
+        std_phase,
+        avg_az,
+        std_az,
+        avg_el,
+        std_el,
+        avg_aod_az,
+        std_aod_az,
+        avg_aod_el,
+        std_aod_el,
+        avg_path_length_rmse,
+        std_path_length_rmse,
+        avg_interaction_accuracy,
+        std_interaction_accuracy,
+        avg_interaction_f1,
+        std_interaction_f1,
+        avg_delay_mae,
+        std_delay_mae,
+        avg_power_mae,
+        std_power_mae,
+        avg_phase_mae,
+        std_phase_mae,
+        avg_az_mae,
+        std_az_mae,
+        avg_el_mae,
+        std_el_mae,
+        avg_aod_az_mae,
+        std_aod_az_mae,
+        avg_aod_el_mae,
+        std_aod_el_mae,
+        avg_path_length_mae,
+        std_path_length_mae,
+    ) = results
     row = {
         "scenario": scenario,
         "n_clusters": args.n_clusters,
@@ -234,20 +276,43 @@ def run_scenario(scenario, args):
         "corridor_bins": args.corridor_bins,
         "prompt_dim": prompt_dim,
         "use_material_features": args.use_material_features,
+        "noise_prob": args.noise_prob,
         "delay_rmse": avg_delay,
+        "delay_rmse_std": std_delay,
         "power_rmse": avg_power,
+        "power_rmse_std": std_power,
         "phase_rmse": avg_phase,
+        "phase_rmse_std": std_phase,
         "az_rmse": avg_az,
+        "az_rmse_std": std_az,
         "el_rmse": avg_el,
+        "el_rmse_std": std_el,
+        "aod_az_rmse": avg_aod_az,
+        "aod_az_rmse_std": std_aod_az,
+        "aod_el_rmse": avg_aod_el,
+        "aod_el_rmse_std": std_aod_el,
         "path_length_rmse": avg_path_length_rmse,
+        "path_length_rmse_std": std_path_length_rmse,
         "interaction_accuracy": avg_interaction_accuracy,
+        "interaction_accuracy_std": std_interaction_accuracy,
         "interaction_f1": avg_interaction_f1,
+        "interaction_f1_std": std_interaction_f1,
         "delay_mae": avg_delay_mae,
+        "delay_mae_std": std_delay_mae,
         "power_mae": avg_power_mae,
+        "power_mae_std": std_power_mae,
         "phase_mae": avg_phase_mae,
+        "phase_mae_std": std_phase_mae,
         "avg_az_mae": avg_az_mae,
+        "avg_az_mae_std": std_az_mae,
         "avg_el_mae": avg_el_mae,
+        "avg_el_mae_std": std_el_mae,
+        "avg_aod_az_mae": avg_aod_az_mae,
+        "avg_aod_az_mae_std": std_aod_az_mae,
+        "avg_aod_el_mae": avg_aod_el_mae,
+        "avg_aod_el_mae_std": std_aod_el_mae,
         "path_length_mae": avg_path_length_mae,
+        "path_length_mae_std": std_path_length_mae,
         "best_val_loss": best_loss.item() if hasattr(best_loss, "item") else best_loss,
     }
     pd.DataFrame([row]).to_csv(args.csv_log_file, mode="a", index=False, header=not os.path.exists(args.csv_log_file))

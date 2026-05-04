@@ -77,14 +77,7 @@ config = {
 
 
 
-# %%
 
-
-
-# %%
-
-
-# %%
 # Paths sorted by delay (ascending) for encoder-first + decoder-deltas training
 train_data  = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="delay")
 

@@ -1,0 +1,1153 @@
+# %%
+# !pip install DeepMIMO==4.0.0b10
+
+# %%
+# %%
+# =============================================================================
+# 1. IMPORTS AND WARNINGS SETUP
+#    - Load necessary PyTorch modules, utilities, and suppress UserWarnings
+# =============================================================================
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+import argparse
+import os
+import torch
+from tqdm import tqdm
+import math
+# from utils import (generate_channels_and_labels, tokenizer_train, tokenizer, make_sample, nmse_loss,
+                #    create_train_dataloader, patch_maker, count_parameters, train_lwm)
+from collections import defaultdict
+import numpy as np
+# import pretrained_model  # Assuming this contains the LWM model definition
+import matplotlib.pyplot as plt
+import warnings
+import os
+import bisect
+# from collections import defaultdict
+from tqdm import tqdm
+warnings.filterwarnings("ignore", category=UserWarning)
+# from utils import *
+import deepmimo as dm
+from sklearn.metrics import mean_squared_error
+import numpy as np
+from tqdm import tqdm
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from models import PathDecoder, GPTPathDecoder
+from dataset.dataloaders import PreTrainMySeqDataLoader
+from utils.utils import *
+# from utils.loss_experiments import masked_loss_topk_weighted
+
+from tqdm import tqdm
+import torch
+import numpy as np
+import pandas as pd
+import os
+
+csv_log_file = "weighted_final_scenario_results.csv"
+
+def compute_stop_metrics(path_count, targets, pad_value=0):
+    """
+
+    Args:
+
+    """
+
+    rmse = np.sqrt(mean_squared_error(path_count.cpu().numpy(), targets.squeeze().cpu().numpy()))
+    
+    return rmse 
+
+
+def compute_interaction_metrics_from_logits(interaction_logits, interaction_targets):
+    interaction_mask = (interaction_targets[:, :, 0] != -1)
+
+    if not interaction_mask.any():
+        return 0.0, 0.0
+
+    valid_logits = interaction_logits[interaction_mask]
+    valid_targets = interaction_targets[interaction_mask]
+    valid_preds = (torch.sigmoid(valid_logits) > 0.5).int().detach().cpu().numpy()
+    valid_targets = valid_targets.int().detach().cpu().numpy()
+
+    accuracy = accuracy_score(valid_targets.reshape(-1), valid_preds.reshape(-1))
+    f1 = f1_score(valid_targets.reshape(-1), valid_preds.reshape(-1), zero_division=0)
+    return accuracy, f1
+
+
+
+def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
+    model.eval()
+
+    delay_errors = []
+    power_errors = []
+    phase_errors = []
+    path_length_rmses = []
+
+
+
+    delay_maes = []
+    power_maes = []
+    phase_maes = []
+    path_length_maes = []
+    # AoA metrics
+    az_errors = []
+    el_errors = []
+    aod_az_errors = []
+    aod_el_errors = []
+    az_maes = []
+    el_maes = []
+    aod_az_maes = []
+    aod_el_maes = []
+    interaction_targets_all = []
+    interaction_preds_all = []
+
+    def mean_std(values):
+        if len(values) == 0:
+            return 0.0, 0.0
+        arr = np.asarray(values, dtype=np.float64)
+        return float(np.mean(arr)), float(np.std(arr))
+
+    with torch.no_grad():
+        outer_bar = tqdm(val_loader, desc="Evaluating (batches)", leave=True)
+
+        for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in outer_bar:
+            prompts = prompts.cuda()
+            paths = paths.cuda()
+            path_lengths = path_lengths.cuda()
+            interactions = interactions.cuda()
+            batch_size = prompts.size(0)
+            generated, path_lengths_pred, inter_str_pred = generate_paths_no_env_batch(
+                model,
+                prompts,
+                max_steps=max_generate,
+            )
+            generated = generated.cuda()
+            inter_str_pred = inter_str_pred.cpu()
+
+            if path_lengths_pred.dim() > 1:
+                path_lengths_pred = path_lengths_pred.squeeze(-1)
+
+            batch_delay_rmses = []
+            batch_power_rmses = []
+            batch_phase_rmses = []
+            batch_length_rmses = []
+            batch_az_rmses = []
+            batch_el_rmses = []
+            batch_aod_az_rmses = []
+            batch_aod_el_rmses = []
+
+            for b in range(batch_size):
+                n_valid = int(round(path_lengths[b].item() * 25))
+                gt = paths[b][1:1 + n_valid, :7]
+                gt_interactions = interactions[b][1:1 + n_valid, :]
+
+                T = min(len(gt), generated.size(1))
+                pred = generated[b, :T]
+                gt = gt[:T]
+                pred_interactions = inter_str_pred[b, :T]
+                gt_interactions = gt_interactions[:T].detach().cpu()
+
+                valid_interaction_mask = (gt_interactions[:, 0] != -1)
+                if valid_interaction_mask.any():
+                    interaction_targets_all.append(
+                        gt_interactions[valid_interaction_mask].numpy().astype(np.int32)
+                    )
+                    interaction_preds_all.append(
+                        pred_interactions[valid_interaction_mask].detach().cpu().numpy().astype(np.int32)
+                    )
+
+   
+                # delay_pred = (pred[:,0]  * data_stats["delay"]["std"] ) + data_stats["delay"]["mean"]
+                # delay = (gt[:,0] * data_stats["delay"]["std"]) + data_stats["delay"]["mean"]
+
+
+                # power_pred = (pred[:,1]  * data_stats["power"]["std"] ) + data_stats["power"]["mean"]
+                # power = (gt[:,1] * data_stats["power"]["std"]) + data_stats["power"]["mean"]
+
+                # phase_pred = (pred[:,2]  * data_stats["phase"]["std"] ) + data_stats["phase"]["mean"]
+                # phase = (gt[:,2] * data_stats["phase"]["std"]) + data_stats["phase"]["mean"]
+
+
+                # aoa_az_pred = (pred[:,3]  * data_stats["aoa_az"]["std"] ) + data_stats["aoa_az"]["mean"]
+                # aoa_az = (gt[:,3] * data_stats["aoa_az"]["std"]) + data_stats["aoa_az"]["mean"]
+              
+                # aoa_el_pred = (pred[:,4]  * data_stats["aoa_el"]["std"] ) + data_stats["aoa_el"]["mean"]
+                # aoa_el = (gt[:,4] * data_stats["aoa_el"]["std"]) + data_stats["aoa_el"]["mean"]
+
+                delay_pred = pred[:,0]  
+                # delay_pred = torch.cumsum(delay_pred, dim=0)
+                delay = gt[:,0]
+
+
+                power_pred = pred[:,1]  
+                power = gt[:,1] 
+                phase_pred = pred[:,2]
+                phase = gt[:,2]
+                aoa_az_pred = pred[:,3]  
+                aoa_az = gt[:,3]           
+                aoa_el_pred = pred[:,4]    
+                aoa_el = gt[:,4] 
+                aod_az_pred = pred[:,5]
+                aod_az = gt[:,5]
+                aod_el_pred = pred[:,6]
+                aod_el = gt[:,6]
+                # ---- Compute Metrics ----
+                delay_residuals = delay_pred - delay
+                delay_rmse = torch.mean((delay_residuals)**2).sqrt().item()
+                delay_mae = torch.mean(torch.abs(delay_residuals)).item()
+
+                power_rmse = torch.mean((power_pred/0.01 -power/0.01)**2).sqrt().item()
+                power_mae = torch.mean((torch.abs(power_pred/0.01 -power/0.01))).item()
+
+                # Phase errors
+                y_hat_angles = (phase_pred / (np.pi/180))
+                y_angles = (phase / (np.pi/180))
+                phase_circular_dist = (y_hat_angles - y_angles + 180) % 360 - 180
+                phase_rmse = torch.mean(phase_circular_dist**2).sqrt().item()
+                phase_mae = torch.mean(torch.abs(phase_circular_dist)).item()
+                
+
+                # AoA azimuth errors
+                y_hat_az = (aoa_az_pred / (np.pi/180))
+                y_az = (aoa_az / (np.pi/180))
+
+                az_circular_dist = (y_hat_az - y_az + 180) % 360 - 180
+                az_rmse = torch.mean(az_circular_dist**2).sqrt().item()
+                az_mae = torch.mean(torch.abs(az_circular_dist)).item()
+
+                # AoA elevation errors
+                y_hat_el = (aoa_el_pred / (np.pi/180))
+                y_el = (aoa_el/ (np.pi/180))
+                el_circular_dist = (y_hat_el - y_el + 180) % 360 - 180
+                el_rmse = torch.mean(el_circular_dist**2).sqrt().item()
+                el_mae = torch.mean(torch.abs(el_circular_dist)).item()
+
+                y_hat_aod_az = (aod_az_pred / (np.pi/180))
+                y_aod_az = (aod_az / (np.pi/180))
+                aod_az_circular_dist = (y_hat_aod_az - y_aod_az + 180) % 360 - 180
+                aod_az_rmse = torch.mean(aod_az_circular_dist**2).sqrt().item()
+                aod_az_mae = torch.mean(torch.abs(aod_az_circular_dist)).item()
+
+                y_hat_aod_el = (aod_el_pred / (np.pi/180))
+                y_aod_el = (aod_el / (np.pi/180))
+                aod_el_circular_dist = (y_hat_aod_el - y_aod_el + 180) % 360 - 180
+                aod_el_rmse = torch.mean(aod_el_circular_dist**2).sqrt().item()
+                aod_el_mae = torch.mean(torch.abs(aod_el_circular_dist)).item()
+
+                # Path length RMSE
+                path_lengths_pred_b = path_lengths_pred[b]
+                length_rmse = (torch.mean((path_lengths_pred_b - path_lengths[b])**2)).sqrt().item()
+                length_mae = (torch.mean(torch.abs(path_lengths_pred_b - path_lengths[b]))).item()
+
+
+                # Save metrics
+                delay_errors.append(delay_rmse)
+                power_errors.append(power_rmse)
+                phase_errors.append(phase_rmse)
+                path_length_rmses.append(length_rmse)
+                # AoA
+                az_errors.append(az_rmse)
+                el_errors.append(el_rmse)
+                aod_az_errors.append(aod_az_rmse)
+                aod_el_errors.append(aod_el_rmse)
+
+                delay_maes.append(delay_mae)
+                power_maes.append(power_mae)
+                phase_maes.append(phase_mae)
+                path_length_maes.append(length_mae)
+                az_maes.append(az_mae)
+                el_maes.append(el_mae)
+                aod_az_maes.append(aod_az_mae)
+                aod_el_maes.append(aod_el_mae)
+                batch_delay_rmses.append(delay_rmse)
+                batch_power_rmses.append(power_rmse)
+                batch_phase_rmses.append(phase_rmse)
+                batch_length_rmses.append(length_rmse)
+                batch_az_rmses.append(az_rmse)
+                batch_el_rmses.append(el_rmse)
+                batch_aod_az_rmses.append(aod_az_rmse)
+                batch_aod_el_rmses.append(aod_el_rmse)
+
+                # wandb logging
+                if log_to_wandb:
+                    wandb.log({
+                        "test_delay_rmse": delay_rmse,
+                        "test_power_rmse": power_rmse,
+                        "test_phase_circ_err": phase_rmse,
+                        "test_stop_length_rmse": length_rmse,
+                        "test_az_rmse": az_rmse,
+                        "test_el_rmse": el_rmse,
+                        "test_aod_az_rmse": aod_az_rmse,
+                        "test_aod_el_rmse": aod_el_rmse,
+                        "test_delay_mae": delay_mae,
+                        "test_power_mae": power_mae,
+                        "test_phase_circ_err_mae": phase_mae,
+                        "test_az_mae": az_mae,
+                        "test_el_mae": el_mae,
+                        "test_aod_az_mae": aod_az_mae,
+                        "test_aod_el_mae": aod_el_mae,
+                        "test_stop_length_mae": length_mae,
+                    })
+
+            if batch_delay_rmses:
+                outer_bar.set_postfix({
+                    "delay_rmse": f"{np.mean(batch_delay_rmses):.3f}",
+                    "power_rmse": f"{np.mean(batch_power_rmses):.3f}",
+                    "phase_rmse": f"{np.mean(batch_phase_rmses):.3f}",
+                    "az_rmse": f"{np.mean(batch_az_rmses):.3f}",
+                    "el_rmse": f"{np.mean(batch_el_rmses):.3f}",
+                    "aod_az_rmse": f"{np.mean(batch_aod_az_rmses):.3f}",
+                    "aod_el_rmse": f"{np.mean(batch_aod_el_rmses):.3f}",
+                    "length_rmse": f"{np.mean(batch_length_rmses):.3f}",
+                })
+            # print("Batch evaluation complete.")
+            
+            # print("\n================= Up toBATCH EVALUATION RESULTS =================")
+            # print(f"Avg Delay RMSE           : {np.mean(delay_errors):.4f} µs")
+            # print(f"Avg Power RMSE           : {np.mean(power_errors):.4f} dB")
+            # print(f"Avg Phase RMSE           : {np.mean(phase_errors):.4f} degrees")
+            # print(f"Avg Path Length RMSE     : {np.mean(path_length_rmses):.4f}")
+            # print(f"Avg Delay MAE           : {np.mean(delay_maes):.4f} µs")
+            # print(f"Avg Power MAE           : {np.mean(power_maes):.4f} dB")
+            # print(f"Avg Phase MAE           : {np.mean(phase_maes):.4f} degrees")
+            # print(f"Avg Path Length MAE     : {np.mean(path_length_maes):.4f}")
+            # print("============================================================")
+            
+
+    # ---- Final Aggregated Results ----
+    avg_delay, std_delay = mean_std(delay_errors)
+    avg_power, std_power = mean_std(power_errors)
+    avg_phase, std_phase = mean_std(phase_errors)
+    avg_az, std_az = mean_std(az_errors)
+    avg_el, std_el = mean_std(el_errors)
+    avg_aod_az, std_aod_az = mean_std(aod_az_errors)
+    avg_aod_el, std_aod_el = mean_std(aod_el_errors)
+    avg_path_length_rmse, std_path_length_rmse = mean_std(path_length_rmses)
+
+    avg_delay_mae, std_delay_mae = mean_std(delay_maes)
+    avg_power_mae, std_power_mae = mean_std(power_maes)
+    avg_phase_mae, std_phase_mae = mean_std(phase_maes)
+    avg_az_mae, std_az_mae = mean_std(az_maes)
+    avg_el_mae, std_el_mae = mean_std(el_maes)
+    avg_aod_az_mae, std_aod_az_mae = mean_std(aod_az_maes)
+    avg_aod_el_mae, std_aod_el_mae = mean_std(aod_el_maes)
+    avg_path_length_mae, std_path_length_mae = mean_std(path_length_maes)
+    if interaction_targets_all:
+        interaction_targets_np = np.concatenate(interaction_targets_all, axis=0)
+        interaction_preds_np = np.concatenate(interaction_preds_all, axis=0)
+        avg_interaction_accuracy = accuracy_score(
+            interaction_targets_np.reshape(-1),
+            interaction_preds_np.reshape(-1),
+        )
+        avg_interaction_f1 = f1_score(
+            interaction_targets_np.reshape(-1),
+            interaction_preds_np.reshape(-1),
+            zero_division=0,
+        )
+        interaction_accuracy_per_sample = [
+            accuracy_score(targets.reshape(-1), preds.reshape(-1))
+            for targets, preds in zip(interaction_targets_all, interaction_preds_all)
+        ]
+        interaction_f1_per_sample = [
+            f1_score(targets.reshape(-1), preds.reshape(-1), zero_division=0)
+            for targets, preds in zip(interaction_targets_all, interaction_preds_all)
+        ]
+        _, std_interaction_accuracy = mean_std(interaction_accuracy_per_sample)
+        _, std_interaction_f1 = mean_std(interaction_f1_per_sample)
+    else:
+        avg_interaction_accuracy = 0.0
+        avg_interaction_f1 = 0.0
+        std_interaction_accuracy = 0.0
+        std_interaction_f1 = 0.0
+
+    print("\n=================  Final EVALUATION RESULTS =================")
+    print(f"Delay RMSE           : {avg_delay:.4f} +/- {std_delay:.4f} µs")
+    print(f"Power RMSE           : {avg_power:.4f} +/- {std_power:.4f} dB")
+    print(f"Phase RMSE           : {avg_phase:.4f} +/- {std_phase:.4f} degrees")
+    print(f"AoA Azimuth RMSE     : {avg_az:.4f} +/- {std_az:.4f} degrees")
+    print(f"AoA Elevation RMSE   : {avg_el:.4f} +/- {std_el:.4f} degrees")
+    print(f"AoD Azimuth RMSE     : {avg_aod_az:.4f} +/- {std_aod_az:.4f} degrees")
+    print(f"AoD Elevation RMSE   : {avg_aod_el:.4f} +/- {std_aod_el:.4f} degrees")
+    print(f"Path Length RMSE     : {avg_path_length_rmse:.4f} +/- {std_path_length_rmse:.4f}")
+    print(f"Interaction Accuracy : {avg_interaction_accuracy:.4f} +/- {std_interaction_accuracy:.4f}")
+    print(f"Interaction F1       : {avg_interaction_f1:.4f} +/- {std_interaction_f1:.4f}")
+        
+    print(f"Delay MAE           : {avg_delay_mae:.4f} +/- {std_delay_mae:.4f} µs")
+    print(f"Power MAE           : {avg_power_mae:.4f} +/- {std_power_mae:.4f} dB")
+    print(f"Phase MAE           : {avg_phase_mae:.4f} +/- {std_phase_mae:.4f} degrees")
+    print(f"AoA Azimuth MAE     : {avg_az_mae:.4f} +/- {std_az_mae:.4f} degrees")
+    print(f"AoA Elevation MAE   : {avg_el_mae:.4f} +/- {std_el_mae:.4f} degrees")
+    print(f"AoD Azimuth MAE     : {avg_aod_az_mae:.4f} +/- {std_aod_az_mae:.4f} degrees")
+    print(f"AoD Elevation MAE   : {avg_aod_el_mae:.4f} +/- {std_aod_el_mae:.4f} degrees")
+    print(f"Path Length MAE     : {avg_path_length_mae:.4f} +/- {std_path_length_mae:.4f}")
+    print("=====================================================\n")
+
+    if log_to_wandb:
+        wandb.run.summary["test_delay_rmse"] = avg_delay
+        wandb.run.summary["test_delay_rmse_std"] = std_delay
+        wandb.run.summary["test_power_rmse"] = avg_power
+        wandb.run.summary["test_power_rmse_std"] = std_power
+        wandb.run.summary["test_phase_circ_err"] = avg_phase
+        wandb.run.summary["test_phase_circ_err_std"] = std_phase
+        wandb.run.summary["test_az_rmse"] = avg_az
+        wandb.run.summary["test_az_rmse_std"] = std_az
+        wandb.run.summary["test_el_rmse"] = avg_el
+        wandb.run.summary["test_el_rmse_std"] = std_el
+        wandb.run.summary["test_aod_az_rmse"] = avg_aod_az
+        wandb.run.summary["test_aod_az_rmse_std"] = std_aod_az
+        wandb.run.summary["test_aod_el_rmse"] = avg_aod_el
+        wandb.run.summary["test_aod_el_rmse_std"] = std_aod_el
+        wandb.run.summary["test_path_length_rmse"] = avg_path_length_rmse
+        wandb.run.summary["test_path_length_rmse_std"] = std_path_length_rmse
+        wandb.run.summary["test_interaction_accuracy"] = avg_interaction_accuracy
+        wandb.run.summary["test_interaction_accuracy_std"] = std_interaction_accuracy
+        wandb.run.summary["test_interaction_f1"] = avg_interaction_f1
+        wandb.run.summary["test_interaction_f1_std"] = std_interaction_f1
+        
+        wandb.run.summary["test_delay_mae"] = avg_delay_mae
+        wandb.run.summary["test_delay_mae_std"] = std_delay_mae
+        wandb.run.summary["test_power_mae"] = avg_power_mae
+        wandb.run.summary["test_power_mae_std"] = std_power_mae
+        wandb.run.summary["test_phase_circ_err_mae"] = avg_phase_mae
+        wandb.run.summary["test_phase_circ_err_mae_std"] = std_phase_mae
+        wandb.run.summary["test_az_mae"] = avg_az_mae
+        wandb.run.summary["test_az_mae_std"] = std_az_mae
+        wandb.run.summary["test_el_mae"] = avg_el_mae
+        wandb.run.summary["test_el_mae_std"] = std_el_mae
+        wandb.run.summary["test_aod_az_mae"] = avg_aod_az_mae
+        wandb.run.summary["test_aod_az_mae_std"] = std_aod_az_mae
+        wandb.run.summary["test_aod_el_mae"] = avg_aod_el_mae
+        wandb.run.summary["test_aod_el_mae_std"] = std_aod_el_mae
+        wandb.run.summary["test_path_length_mae"] = avg_path_length_mae
+        wandb.run.summary["test_path_length_mae_std"] = std_path_length_mae
+
+    return (
+        avg_delay,
+        std_delay,
+        avg_power,
+        std_power,
+        avg_phase,
+        std_phase,
+        avg_az,
+        std_az,
+        avg_el,
+        std_el,
+        avg_aod_az,
+        std_aod_az,
+        avg_aod_el,
+        std_aod_el,
+        avg_path_length_rmse,
+        std_path_length_rmse,
+        avg_interaction_accuracy,
+        std_interaction_accuracy,
+        avg_interaction_f1,
+        std_interaction_f1,
+        avg_delay_mae,
+        std_delay_mae,
+        avg_power_mae,
+        std_power_mae,
+        avg_phase_mae,
+        std_phase_mae,
+        avg_az_mae,
+        std_az_mae,
+        avg_el_mae,
+        std_el_mae,
+        avg_aod_az_mae,
+        std_aod_az_mae,
+        avg_aod_el_mae,
+        std_aod_el_mae,
+        avg_path_length_mae,
+        std_path_length_mae,
+    )
+
+
+
+
+def show_example(model, val_loader, sample_index=0, k=25, plot=True):
+    model.eval()
+    prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask = next(iter(val_loader))
+    
+    prompts = prompts.cuda()
+    paths = paths.cuda()
+    path_lengths = path_lengths.cuda()
+    
+    pred_paths, path_lengths_pred, inter_str_pred = generate_paths_no_env(model, prompts[sample_index])
+    
+
+    pred = pred_paths[0]  # (T,3)
+    # Use path length to get valid positions (mask-based; pad value is 0)
+    n_valid = int(round(path_lengths[sample_index].item() * 25))
+    gt = paths[sample_index][1:1 + n_valid, :3]  # Extract only 3D components (T,3)
+
+    print("\n--- Ground Truth Length {} ".format(len(gt)))
+
+    print("\n--- Model Predict Length (first {} paths) ---".format(path_lengths_pred.item()))
+    
+    
+    print(gt[:k])
+    print(pred[:k])
+
+    if plot:
+        T = min(len(gt), len(pred))
+        # print("len_path", len(pred), "actual = ", T)
+        pred = pred[:T]
+        gt = gt[:T]
+
+        fig, axs = plt.subplots(3,1, figsize=(10,12))
+
+        axs[0].plot(gt[:,0].cpu(), label="GT Delay", marker='o')
+        axs[0].plot(pred[:,0].cpu(), label="Pred Delay", marker='x')
+        axs[0].set_title("Path Delay (µs)")
+        axs[0].legend()
+
+        axs[1].plot(gt[:,1].cpu()*0.01, label="GT Power", marker='o')
+        axs[1].plot(pred[:,1].cpu()*0.01, label="Pred Power", marker='x')
+        axs[1].set_title("Path Power dB")
+        axs[1].legend()
+
+        axs[2].plot(gt[:,2].cpu()/(np.pi/180), label="GT Phase", marker='o')
+        axs[2].plot(pred[:,2].cpu()/(np.pi/180), label="Pred Phase", marker='x')
+        axs[2].set_title("Path Phase (degrees)")
+
+        axs[2].legend()
+
+        plt.tight_layout()
+        plt.show()
+
+
+def evaluate_generation(val_loader, n_samples=3):
+    model.eval()
+    for i, (prompts, paths) in enumerate(val_loader):
+        if i >= n_samples:
+            break
+        pred, path_lengths_pred = generate_paths_no_env(model, prompts[0])  # autoregressive generation
+        print(f"path lengths pred: {path_lengths_pred[0]}")
+        print(f"\nSample {i}")
+        print("GT paths (first 5):")
+        print(paths[0][:5])
+        print("Predicted paths (first 5):")
+        print(pred[0][:5])
+
+# %%
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def train_with_interactions(
+    model,
+    train_loader,
+    val_loader,
+    config,
+    train_data,
+    optimizer,
+    scheduler,
+    checkpoint_path,
+    task=None,
+):
+    """
+    Modified training loop with interaction prediction.
+    """
+    resume_checkpoint_path = config.get("resume_checkpoint_path")
+    start_epoch, best_val_loss, resumed_from = load_training_checkpoint(
+        model,
+        optimizer,
+        scheduler,
+        checkpoint_path,
+        resume_checkpoint_path=resume_checkpoint_path,
+    )
+    if resumed_from is not None:
+        print(f"Resuming training from {resumed_from} at epoch {start_epoch}")
+    if start_epoch >= config["epochs"]:
+        print(f"Checkpoint already reached epoch {start_epoch}; skipping training.")
+        return
+
+    for epoch in range(start_epoch, config["epochs"]):
+        # -------------------- TRAINING --------------------
+        model.train()
+        train_losses = []
+        train_loss_delay = []
+        train_loss_power = []
+        train_loss_phase = []
+        train_loss_path_length = []
+        train_loss_interaction = []  # NEW
+        train_interaction_accuracies = []
+        train_interaction_f1s = []
+        train_path_length_rmse = []
+        train_loss_az = []
+        train_loss_el = []
+        train_loss_aod_az = []
+        train_loss_aod_el = []
+        train_ch_nmse = []
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False)
+        for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:  # NEW: added interactions
+            prompts = prompts.cuda()
+            paths = paths.cuda()
+            path_lengths = path_lengths.cuda()
+            interactions = interactions.cuda()  # NEW
+            path_padding_mask = path_padding_mask.cuda()
+
+            paths_in = paths[:, :-1, :]
+            p_noise = config.get("TARGET_NOISE_PROB", 0.0)
+            if p_noise > 0:
+                paths_in = add_noise_to_paths(paths_in, path_padding_mask[:, :-1], p_noise=p_noise,
+                                              noise_params=config.get("TARGET_NOISE_PARAMS"))
+            interactions_in = interactions[:, :-1, :]
+
+            paths_out = paths[:, 1:, :]
+            interactions_out = interactions[:, 1:, :]  # NEW: shift targets
+
+            (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+             az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+             aod_az_sin_pred, aod_az_cos_pred, aod_az_pred,
+             aod_el_sin_pred, aod_el_cos_pred, aod_el_pred,
+             path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
+
+            (total_loss, loss_delay, loss_power, loss_phase,
+             loss_az, loss_el, loss_aod_az, loss_aod_el, loss_path_length, loss_interaction,loss_channel) = masked_loss(
+                delay_pred, power_pred, phase_sin_pred, phase_cos_pred,phase_pred,
+                az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred,el_pred,
+                aod_az_sin_pred, aod_az_cos_pred, aod_az_pred,
+                aod_el_sin_pred, aod_el_cos_pred, aod_el_pred,
+                path_length_pred, interaction_logits, paths_out, path_lengths,
+                interactions_out, finetune=task, pad_value=train_data.pad_value,
+                interaction_weight=config.get("interaction_weight", 0.1),
+                path_padding_mask=path_padding_mask,
+                time_step_weighted=config.get("time_step_weighted", False)
+            )
+            # (total_loss, loss_delay, loss_power, loss_phase,
+            # loss_az, loss_el, loss_path_length, loss_interaction, loss_channel) = masked_loss_topk_weighted(
+            #     delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+            #     az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+            #     path_length_pred, interaction_logits, paths_out, path_lengths,
+            #     interactions_out,
+            #     finetune=task,
+            #     pad_value=train_data.pad_value,
+            #     interaction_weight=config.get("interaction_weight", 0.1),
+            #     path_padding_mask=path_padding_mask,
+            #     top_k=5,
+            #     weighting_mode="explicit",
+            #     explicit_weights=[8.0, 4.0, 2.0, 1.0, 1.0],
+            # )
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
+            
+            path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1), 
+                                                    path_lengths)
+            interaction_accuracy, interaction_f1 = compute_interaction_metrics_from_logits(
+                interaction_logits.detach(),
+                interactions_out,
+            )
+            ch_nmse = 0
+            if epoch >= 0:
+                pass
+                # pred_power_linear = 10**( ((power_pred.cpu().detach().numpy())/0.01)/10)
+                # pred_delay_secs = delay_pred.cpu().detach().numpy()/ 1e6
+
+
+                # delay_t = paths_out[:, :, 0].cpu().detach().numpy()
+                # power_t = paths_out[:, :, 1].cpu().detach().numpy()
+                # phase = paths_out[:, :, 2].cpu().detach().numpy()
+                # az = paths_out[:, :, 3].cpu().detach().numpy()
+                # el = paths_out[:, :, 4].cpu().detach().numpy()
+                # power_linear = 10**( (power_t/0.01)/10)
+                # delay_secs = delay_t/ 1e6
+
+                # predicted_channels = mycomputer.compute_channels(pred_power_linear,pred_delay_secs, phase_pred.cpu().detach().numpy(), az_pred.cpu().detach().numpy(), el_pred.cpu().detach().numpy(),kwargs=None  )
+                # gt_channels = mycomputer.compute_channels(power_linear,delay_secs, phase, az, el ,kwargs=None )
+   
+
+
+                # ch_nmse = compute_channel_nmse(predicted_channels, gt_channels)
+            train_ch_nmse.append(ch_nmse)
+            train_losses.append(total_loss.item())
+            train_loss_delay.append(loss_delay.item())
+            train_loss_power.append(loss_power.item())
+            train_loss_phase.append(loss_phase.item())
+            train_loss_path_length.append(loss_path_length.item())
+            # track aoa losses
+            # if 'train_loss_az' not in locals():
+            #     train_loss_az = []
+            #     train_loss_el = []
+            train_loss_az.append(loss_az.item())
+            train_loss_el.append(loss_el.item())
+            train_loss_aod_az.append(loss_aod_az.item())
+            train_loss_aod_el.append(loss_aod_el.item())
+            train_loss_interaction.append(loss_interaction.item())  # NEW
+            train_interaction_accuracies.append(interaction_accuracy)
+            train_interaction_f1s.append(interaction_f1)
+            train_path_length_rmse.append(path_length_rmse)
+            current_lr = optimizer.param_groups[0]["lr"]
+            pbar.set_postfix({
+                "loss": f"{total_loss.item():.4f}",
+                "delay": f"{loss_delay.item():.4f}",
+                
+                "power": f"{loss_power.item():.4f}",
+                "phase": f"{loss_phase.item():.4f}",
+                "az": f"{loss_az.item():.4f}",
+                "el": f"{loss_el.item():.4f}",
+                "aod_az": f"{loss_aod_az.item():.4f}",
+                "aod_el": f"{loss_aod_el.item():.4f}",
+                "inter": f"{loss_interaction.item():.4f}",  # NEW
+                "i_acc": f"{interaction_accuracy:.4f}",
+                "i_f1": f"{interaction_f1:.4f}",
+                "path_rmse": f"{path_length_rmse:.4f}",
+                "ch_nmse":f"{ch_nmse:.4f}",
+                "lr": f"{current_lr:.2e}"
+            })
+
+        scheduler.step()
+        avg_train_loss = np.mean(train_losses)
+        avg_train_delay = np.mean(train_loss_delay)
+        avg_train_power = np.mean(train_loss_power)
+        avg_train_phase = np.mean(train_loss_phase)
+        avg_train_az = np.mean(train_loss_az) 
+        avg_train_el = np.mean(train_loss_el)
+        avg_train_aod_az = np.mean(train_loss_aod_az)
+        avg_train_aod_el = np.mean(train_loss_aod_el)
+        avg_train_path_length = np.mean(train_loss_path_length)
+        avg_train_interaction = np.mean(train_loss_interaction)  # NEW
+        avg_train_interaction_accuracy = np.mean(train_interaction_accuracies)
+        avg_train_interaction_f1 = np.mean(train_interaction_f1s)
+        avg_train_path_length_rmse = np.mean(train_path_length_rmse)
+
+        # -------------------- VALIDATION --------------------
+        model.eval()
+        val_losses = []
+        val_loss_delay = []
+        val_loss_power = []
+        val_loss_phase = []
+        val_loss_path_length = []
+        val_loss_interaction = []  # NEW
+        val_interaction_accuracies = []
+        val_interaction_f1s = []
+        val_path_length_rmse = []
+        val_loss_az = []
+        val_loss_el = []
+        val_loss_aod_az = []
+        val_loss_aod_el = []
+
+        with torch.no_grad():
+            pbar = tqdm(val_loader, desc=f"Epoch {epoch} [Val]", leave=False)
+            # prepare val aoa loss lists
+
+            for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask in pbar:  # NEW
+                prompts = prompts.cuda()
+                paths = paths.cuda()
+                path_lengths = path_lengths.cuda()
+                interactions = interactions.cuda()  # NEW
+                path_padding_mask = path_padding_mask.cuda()
+
+                paths_in = paths[:, :-1, :]
+                p_noise = config.get("TARGET_NOISE_PROB", 0.0)
+                if p_noise > 0:
+                    paths_in = add_noise_to_paths(paths_in, path_padding_mask[:, :-1], p_noise=p_noise,
+                                                  noise_params=config.get("TARGET_NOISE_PARAMS"))
+                interactions_in = interactions[:, :-1, :]
+
+                paths_out = paths[:, 1:, :]
+                interactions_out = interactions[:, 1:, :]  # NEW: shift targets
+
+                (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                 az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                 aod_az_sin_pred, aod_az_cos_pred, aod_az_pred,
+                 aod_el_sin_pred, aod_el_cos_pred, aod_el_pred,
+                 path_length_pred, interaction_logits) = model(prompts, paths_in, interactions_in)
+                
+                
+
+                (total_loss, loss_delay, loss_power, loss_phase,
+                loss_az, loss_el, loss_aod_az, loss_aod_el, loss_path_length, loss_interaction,loss_channel) = masked_loss(
+                    delay_pred, power_pred, phase_sin_pred, phase_cos_pred,phase_pred,
+                    az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred,el_pred,
+                    aod_az_sin_pred, aod_az_cos_pred, aod_az_pred,
+                    aod_el_sin_pred, aod_el_cos_pred, aod_el_pred,
+                    path_length_pred, interaction_logits, paths_out, path_lengths,
+                    interactions_out, finetune=task, pad_value=train_data.pad_value,
+                    interaction_weight=config.get("interaction_weight", 0.1),
+                    path_padding_mask=path_padding_mask,
+                    time_step_weighted=config.get("time_step_weighted", False)
+                )
+
+
+                # (total_loss, loss_delay, loss_power, loss_phase,
+                # loss_az, loss_el, loss_path_length, loss_interaction, loss_channel) = masked_loss_topk_weighted(
+                #     delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                #     az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                #     path_length_pred, interaction_logits, paths_out, path_lengths,
+                #     interactions_out,
+                #     finetune=task,
+                #     pad_value=train_data.pad_value,
+                #     interaction_weight=config.get("interaction_weight", 0.1),
+                #     path_padding_mask=path_padding_mask,
+                #     top_k=5,
+                #     weighting_mode="explicit",
+                #     explicit_weights=[8.0, 4.0, 2.0, 1.0, 1.0],
+                # )
+                path_length_rmse = compute_stop_metrics(path_length_pred.detach().squeeze(-1), 
+                                                       path_lengths)
+                interaction_accuracy, interaction_f1 = compute_interaction_metrics_from_logits(
+                    interaction_logits,
+                    interactions_out,
+                )
+
+                val_losses.append(total_loss.item())
+                val_loss_delay.append(loss_delay.item())
+                val_loss_power.append(loss_power.item())
+                val_loss_phase.append(loss_phase.item())
+                val_loss_az.append(loss_az.item())
+                val_loss_el.append(loss_el.item())
+                val_loss_aod_az.append(loss_aod_az.item())
+                val_loss_aod_el.append(loss_aod_el.item())
+                val_loss_path_length.append(loss_path_length.item())
+                val_loss_interaction.append(loss_interaction.item())  # NEW
+                val_interaction_accuracies.append(interaction_accuracy)
+                val_interaction_f1s.append(interaction_f1)
+                val_path_length_rmse.append(path_length_rmse)
+
+                pbar.set_postfix({
+                    "val_loss": f"{total_loss.item():.4f}",
+                    "inter": f"{loss_interaction.item():.4f}",  # NEW
+                    "i_acc": f"{interaction_accuracy:.4f}",
+                    "i_f1": f"{interaction_f1:.4f}",
+                })
+
+        avg_val_loss = np.mean(val_losses)
+        avg_val_delay = np.mean(val_loss_delay)
+        avg_val_power = np.mean(val_loss_power)
+        avg_val_phase = np.mean(val_loss_phase)
+        avg_val_az = np.mean(val_loss_az) 
+        avg_val_el = np.mean(val_loss_el)
+        avg_val_aod_az = np.mean(val_loss_aod_az)
+        avg_val_aod_el = np.mean(val_loss_aod_el)
+        avg_val_path_length = np.mean(val_loss_path_length)
+        avg_val_interaction = np.mean(val_loss_interaction)  # NEW
+        avg_val_interaction_accuracy = np.mean(val_interaction_accuracies)
+        avg_val_interaction_f1 = np.mean(val_interaction_f1s)
+        avg_val_path_length_rmse = np.mean(val_path_length_rmse)
+
+        # scheduler.step(avg_val_loss)
+        current_lr = optimizer.param_groups[0]["lr"]
+
+        # -------------------- CHECKPOINT SAVING --------------------
+        updated_best_val_loss = min(best_val_loss, avg_val_loss)
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_val_loss': torch.tensor(best_val_loss),
+            }, checkpoint_path)
+            print(f"  ✓ Best checkpoint saved (val_loss: {best_val_loss:.4f})")
+
+        if resume_checkpoint_path:
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_val_loss': torch.tensor(updated_best_val_loss),
+            }, resume_checkpoint_path)
+
+        if config.get("USE_WANDB", False):
+            import wandb
+            wandb.log({
+                "train_loss": avg_train_loss,
+                "train_loss_delay": avg_train_delay,
+                "train_loss_power": avg_train_power,
+                "train_loss_phase": avg_train_phase,
+                "train_loss_az": avg_train_az,
+                "train_loss_el": avg_train_el,
+                "train_loss_aod_az": avg_train_aod_az,
+                "train_loss_aod_el": avg_train_aod_el,
+                "train_loss_path_length": avg_train_path_length,
+                "train_loss_interaction": avg_train_interaction,  # NEW
+                "train_interaction_accuracy": avg_train_interaction_accuracy,
+                "train_interaction_f1": avg_train_interaction_f1,
+                "train_path_length_rmse": avg_train_path_length_rmse,
+
+                "val_loss": avg_val_loss,
+                "val_loss_delay": avg_val_delay,
+                "val_loss_power": avg_val_power,
+                "val_loss_phase": avg_val_phase,
+                "val_loss_az": avg_val_az,
+                "val_loss_el": avg_val_el,
+                "val_loss_aod_az": avg_val_aod_az,
+                "val_loss_aod_el": avg_val_aod_el,
+                "val_loss_path_length": avg_val_path_length,
+                "val_loss_interaction": avg_val_interaction,  # NEW
+                "val_interaction_accuracy": avg_val_interaction_accuracy,
+                "val_interaction_f1": avg_val_interaction_f1,
+                "val_path_length_rmse": avg_val_path_length_rmse,
+                "epoch": epoch,
+                "lr": current_lr,
+            })
+
+        print(f"\nEpoch {epoch:02d}")
+        print(f"  Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        print(f"    Delay: {avg_train_delay:.4f} (val: {avg_val_delay:.4f})")
+        print(f"    Power: {avg_train_power:.4f} (val: {avg_val_power:.4f})")
+        print(f"    Phase: {avg_train_phase:.4f} (val: {avg_val_phase:.4f})")
+        print(f"    Az: {avg_train_az:.4f} (val: {avg_val_az:.4f})")
+        print(f"    El: {avg_train_el:.4f} (val: {avg_val_el:.4f})")
+        print(f"    AoD Az: {avg_train_aod_az:.4f} (val: {avg_val_aod_az:.4f})")
+        print(f"    AoD El: {avg_train_aod_el:.4f} (val: {avg_val_aod_el:.4f})")
+
+        print(f"    Interaction: {avg_train_interaction:.4f} (val: {avg_val_interaction:.4f})")  # NEW
+        print(f"    Interaction Acc: {avg_train_interaction_accuracy:.4f} (val: {avg_val_interaction_accuracy:.4f})")
+        print(f"    Interaction F1: {avg_train_interaction_f1:.4f} (val: {avg_val_interaction_f1:.4f})")
+        print(f"    PathLength: {avg_train_path_length:.4f} (val: {avg_val_path_length:.4f})")  # NEW
+
+        print(f"  LR: {current_lr:.3e}")
+
+# model = PathDecoder().to(device)
+
+
+
+
+# %%
+all_scenarios = ['city_47_chicago_3p5', 'city_23_beijing_3p5', 'city_91_xiangyang_3p5', 'city_17_seattle_3p5_s', 'city_12_fortworth_3p5', 'city_92_sãopaulo_3p5', 'city_35_san_francisco_3p5', 'city_10_florida_villa_7gp_1758095156175', 'city_19_oklahoma_3p5_s', 'city_74_chiyoda_3p5']
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train/evaluate the multiscenario direct training model.")
+    parser.add_argument("scenarios", nargs="*", help="Explicit scenario names to run.")
+    parser.add_argument("--scenario", dest="scenario_flag", action="append", help="Scenario name to run. Can be repeated.")
+    parser.add_argument("--scenario-file", type=str, help="Optional file with one scenario per line.")
+    parser.add_argument("--shard-index", type=int, default=None, help="0-based shard index for splitting the scenario list.")
+    parser.add_argument("--num-shards", type=int, default=None, help="Total number of shards for splitting the scenario list.")
+    parser.add_argument("--csv-log-file", type=str, default=csv_log_file, help="CSV path for saving per-scenario results.")
+    parser.add_argument("--checkpoint-dir", type=str, default="base_no_env", help="Directory for scenario checkpoints.")
+    parser.add_argument("--noise-prob", type=float, default=0.2, help="Directory for scenario checkpoints.")
+    parser.add_argument("--skip-train", action="store_true", help="Only load the best checkpoint and run evaluation.")
+    return parser.parse_args()
+
+
+def resolve_scenarios(args):
+    scenarios = []
+    if args.scenarios:
+        scenarios.extend(args.scenarios)
+    if args.scenario_flag:
+        scenarios.extend(args.scenario_flag)
+    if args.scenario_file:
+        with open(args.scenario_file, "r", encoding="utf-8") as handle:
+            scenarios.extend([line.strip() for line in handle if line.strip()])
+    if not scenarios:
+        scenarios = list(all_scenarios)
+    if args.num_shards is not None or args.shard_index is not None:
+        if args.num_shards is None or args.shard_index is None:
+            raise ValueError("Both --num-shards and --shard-index must be provided together.")
+        if args.num_shards <= 0:
+            raise ValueError("--num-shards must be positive.")
+        if args.shard_index < 0 or args.shard_index >= args.num_shards:
+            raise ValueError("--shard-index must be in [0, num_shards).")
+        scenarios = [s for i, s in enumerate(scenarios) if i % args.num_shards == args.shard_index]
+    return scenarios
+
+
+def load_best_checkpoint(model, checkpoint_path):
+    if not os.path.exists(checkpoint_path):
+        print(f"Warning: Checkpoint not found at {checkpoint_path}")
+        return None, None
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    epoch = checkpoint['epoch']
+    best_avg_val_loss = checkpoint['best_val_loss']
+    print(f"✓ Loaded best checkpoint from epoch {epoch} (val_loss: {best_avg_val_loss:.4f})")
+    return epoch, best_avg_val_loss
+
+
+def get_resume_checkpoint_path(checkpoint_path):
+    if checkpoint_path.endswith("_best_model_checkpoint.pth"):
+        return checkpoint_path.replace("_best_model_checkpoint.pth", "_latest_checkpoint.pth")
+    return checkpoint_path + ".latest"
+
+
+def load_training_checkpoint(model, optimizer, scheduler, checkpoint_path, resume_checkpoint_path=None):
+    candidate_paths = []
+    if resume_checkpoint_path is not None:
+        candidate_paths.append(resume_checkpoint_path)
+    candidate_paths.append(checkpoint_path)
+
+    for path in candidate_paths:
+        if path and os.path.exists(path):
+            checkpoint = torch.load(path, map_location=device)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            if optimizer is not None and "optimizer_state_dict" in checkpoint:
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            if scheduler is not None and "scheduler_state_dict" in checkpoint:
+                scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            start_epoch = int(checkpoint.get("epoch", -1)) + 1
+            best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+            if hasattr(best_val_loss, "item"):
+                best_val_loss = float(best_val_loss.item())
+            else:
+                best_val_loss = float(best_val_loss)
+            return start_epoch, best_val_loss, path
+
+    return 0, float("inf"), None
+
+
+def run_scenario(scenario, args):
+    dataset = dm.load(scenario)
+    print(f"######### Training on Scenario {scenario}  #########")
+    config = {
+        "BATCH_SIZE": 128,
+        "PAD_VALUE": 0,
+        "USE_WANDB": False,
+        "LR": 2e-5,
+        "epochs": 300,
+        "interaction_weight": 0.01,
+        "experiment": f"multiscenario_direct_{scenario}",
+        "hidden_dim": 512,
+        "n_layers": 8,
+        "n_heads": 8,
+        "time_step_weighted": False,
+        "TARGET_NOISE_PROB": args.noise_prob,
+        "TARGET_NOISE_PARAMS": None,
+    }
+
+    model = PathDecoder(hidden_dim=config["hidden_dim"], n_layers=config["n_layers"], n_heads=config["n_heads"], include_aod=True).to(device)
+    print("Total trainable parameters:", count_parameters(model))
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config["LR"])
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer,
+        T_0=25,
+        T_mult=1,
+        eta_min=1e-8,
+    )
+
+    os.makedirs(args.checkpoint_dir, exist_ok=True)
+    checkpoint_path = os.path.join(args.checkpoint_dir, f"{config['experiment']}_best_model_checkpoint.pth")
+    config["resume_checkpoint_path"] = get_resume_checkpoint_path(checkpoint_path)
+
+    train_data = PreTrainMySeqDataLoader(dataset, train=True, split_by="user", sort_by="power", normalizers=None, apply_normalizers=[], pad_value=config["PAD_VALUE"], include_aod=True)
+    train_loader = torch.utils.data.DataLoader(
+        dataset=train_data,
+        batch_size=config["BATCH_SIZE"],
+        shuffle=True,
+        collate_fn=train_data.collate_fn,
+    )
+    val_data = PreTrainMySeqDataLoader(dataset, train=False, split_by="user", sort_by="power", normalizers=None, apply_normalizers=[], pad_value=config["PAD_VALUE"], include_aod=True)
+    val_loader = torch.utils.data.DataLoader(
+        dataset=val_data,
+        batch_size=config["BATCH_SIZE"],
+        shuffle=False,
+        collate_fn=val_data.collate_fn,
+    )
+
+    if not args.skip_train:
+        train_with_interactions(
+            model,
+            train_loader,
+            val_loader,
+            config,
+            train_data,
+            optimizer,
+            scheduler,
+            checkpoint_path,
+        )
+
+    best_epoch, best_loss = load_best_checkpoint(model, checkpoint_path=checkpoint_path)
+    results = evaluate_model(model, val_loader)
+    (
+        avg_delay,
+        std_delay,
+        avg_power,
+        std_power,
+        avg_phase,
+        std_phase,
+        avg_az,
+        std_az,
+        avg_el,
+        std_el,
+        avg_aod_az,
+        std_aod_az,
+        avg_aod_el,
+        std_aod_el,
+        avg_path_length_rmse,
+        std_path_length_rmse,
+        avg_interaction_accuracy,
+        std_interaction_accuracy,
+        avg_interaction_f1,
+        std_interaction_f1,
+        avg_delay_mae,
+        std_delay_mae,
+        avg_power_mae,
+        std_power_mae,
+        avg_phase_mae,
+        std_phase_mae,
+        avg_az_mae,
+        std_az_mae,
+        avg_el_mae,
+        std_el_mae,
+        avg_aod_az_mae,
+        std_aod_az_mae,
+        avg_aod_el_mae,
+        std_aod_el_mae,
+        avg_path_length_mae,
+        std_path_length_mae,
+    ) = results
+    scenario_row = {
+        "scenario": scenario,
+        "delay_rmse": avg_delay,
+        "delay_rmse_std": std_delay,
+        "power_rmse": avg_power,
+        "power_rmse_std": std_power,
+        "phase_rmse": avg_phase,
+        "phase_rmse_std": std_phase,
+        "az_rmse": avg_az,
+        "az_rmse_std": std_az,
+        "el_rmse": avg_el,
+        "el_rmse_std": std_el,
+        "aod_az_rmse": avg_aod_az,
+        "aod_az_rmse_std": std_aod_az,
+        "aod_el_rmse": avg_aod_el,
+        "aod_el_rmse_std": std_aod_el,
+        "path_length_rmse": avg_path_length_rmse,
+        "path_length_rmse_std": std_path_length_rmse,
+        "interaction_accuracy": avg_interaction_accuracy,
+        "interaction_accuracy_std": std_interaction_accuracy,
+        "interaction_f1": avg_interaction_f1,
+        "interaction_f1_std": std_interaction_f1,
+        "delay_mae": avg_delay_mae,
+        "delay_mae_std": std_delay_mae,
+        "power_mae": avg_power_mae,
+        "power_mae_std": std_power_mae,
+        "phase_mae": avg_phase_mae,
+        "phase_mae_std": std_phase_mae,
+        "avg_az_mae": avg_az_mae,
+        "avg_az_mae_std": std_az_mae,
+        "avg_el_mae": avg_el_mae,
+        "avg_el_mae_std": std_el_mae,
+        "avg_aod_az_mae": avg_aod_az_mae,
+        "avg_aod_az_mae_std": std_aod_az_mae,
+        "avg_aod_el_mae": avg_aod_el_mae,
+        "avg_aod_el_mae_std": std_aod_el_mae,
+        "path_length_mae": avg_path_length_mae,
+        "path_length_mae_std": std_path_length_mae,
+        "best_val_loss": best_loss.item() if hasattr(best_loss, "item") else best_loss,
+    }
+    df = pd.DataFrame([scenario_row])
+    df.to_csv(args.csv_log_file, mode='a', index=False, header=not os.path.exists(args.csv_log_file))
+    print(f"✓ Results for {scenario} saved to {args.csv_log_file}")
+
+
+def main():
+    args = parse_args()
+    scenarios = resolve_scenarios(args)
+    if not scenarios:
+        print("No scenarios selected for this run.")
+        return
+    print(f"Running {len(scenarios)} scenario(s): {scenarios}")
+    for scenario in scenarios:
+        run_scenario(scenario, args)
+
+
+if __name__ == "__main__":
+    main()

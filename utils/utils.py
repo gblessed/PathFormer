@@ -23,16 +23,42 @@ def generate_paths(model, prompt, env, env_prop, max_steps=25, stop_threshold=0.
     prompt = prompt.unsqueeze(0).cuda()  # (1, prompt_dim)
     env = env.unsqueeze(0).cuda()  # (1, prompt_dim)
     env_prop = env_prop.unsqueeze(0).cuda()  # (1, prompt_dim)
-    # Start with SOS tokens (delay, power, phase, aoa_az, aoa_el)
-    cur = torch.zeros(1, 1, 5).cuda()  # (1, 1, 5)
+    # Start with SOS tokens (delay, power, phase, aoa_az, aoa_el, aod_az, aod_el)
+    cur = torch.zeros(1, 1, 7).cuda()  # (1, 1, 7)
     inter_str = -1 * torch.ones(1, 1, 4).cuda()  # (1, 1, 4) - interaction labels
 
     outputs = []
     outputs_inter_str = []
 
     for t in range(max_steps):
-        # Forward pass - unpack expanded outputs (including aoa preds)
-        d, p, s, c, ph, az_s, az_c, az, el_s, el_c, el, pathcounts, inter_str_logits = model(prompt, cur, inter_str, env, env_prop, pre_train = False)
+        # Forward pass - unpack expanded outputs (including aoa/aod preds)
+        model_outputs = model(prompt, cur, inter_str, env, env_prop, pre_train = False)
+        if len(model_outputs) == 13:
+            d, p, s, c, ph, az_s, az_c, az, el_s, el_c, el, pathcounts, inter_str_logits = model_outputs
+            aod_az = None
+            aod_el = None
+        else:
+            (
+                d,
+                p,
+                s,
+                c,
+                ph,
+                az_s,
+                az_c,
+                az,
+                el_s,
+                el_c,
+                el,
+                aod_az_s,
+                aod_az_c,
+                aod_az,
+                aod_el_s,
+                aod_el_c,
+                aod_el,
+                pathcounts,
+                inter_str_logits,
+            ) = model_outputs
 
         # Get last timestep predictions
         d_t = d[:, -1]           # (1,)
@@ -40,23 +66,32 @@ def generate_paths(model, prompt, env, env_prop, max_steps=25, stop_threshold=0.
         ph_t = ph[:, -1]         # (1,)
         az_t = az[:, -1]
         el_t = el[:, -1]
+        if aod_az is not None:
+            aod_az_t = aod_az[:, -1]
+            aod_el_t = aod_el[:, -1]
         inter_logits_t = inter_str_logits[:, -1]  # (1, 4)
 
         # Convert logits to binary predictions
         inter_pred_t = (torch.sigmoid(inter_logits_t) > 0.5).float()  # (1, 4) - binary [0, 1]
 
-        # Store outputs (delay, power, phase, aoa_az, aoa_el)
-        outputs.append(torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1))
+        # Store outputs (delay, power, phase, aoa_az, aoa_el, aod_az, aod_el)
+        if aod_az is None:
+            outputs.append(torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1))
+        else:
+            outputs.append(torch.stack([d_t, p_t, ph_t, az_t, el_t, aod_az_t, aod_el_t], dim=-1))
         outputs_inter_str.append(inter_pred_t)
 
         # Append predictions for next iteration
-        next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1).unsqueeze(1)  # (1, 1, 5)
+        if aod_az is None:
+            next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1).unsqueeze(1)
+        else:
+            next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t, aod_az_t, aod_el_t], dim=-1).unsqueeze(1)
         cur = torch.cat([cur, next_path], dim=1)
 
         # Use binary predictions for interactions
         inter_str = torch.cat([inter_str, inter_pred_t.unsqueeze(1)], dim=1)  # (1, t+2, 4)
 
-    return (torch.stack(outputs, dim=1).squeeze(0).detach().cpu(),  # (T, 5)
+    return (torch.stack(outputs, dim=1).squeeze(0).detach().cpu(),  # (T, 7)
             pathcounts, 
             torch.stack(outputs_inter_str, dim=1).squeeze(0).detach().cpu())  # (T, 4)
 
@@ -69,16 +104,42 @@ def generate_paths_no_env(model, prompt, max_steps=25, stop_threshold=0.5):
     model.eval()
     prompt = prompt.unsqueeze(0).cuda()  # (1, prompt_dim)
 
-    # Start with SOS tokens (delay, power, phase, aoa_az, aoa_el)
-    cur = torch.zeros(1, 1, 5).cuda()  # (1, 1, 5)
+    # Start with SOS tokens (delay, power, phase, aoa_az, aoa_el, aod_az, aod_el)
+    cur = torch.zeros(1, 1, 7).cuda()  # (1, 1, 7)
     inter_str = -1 * torch.ones(1, 1, 4).cuda()  # (1, 1, 4) - interaction labels
 
     outputs = []
     outputs_inter_str = []
 
     for t in range(max_steps):
-        # Forward pass - unpack expanded outputs (including aoa preds)
-        d, p, s, c, ph, az_s, az_c, az, el_s, el_c, el, pathcounts, inter_str_logits = model(prompt, cur, inter_str)
+        # Forward pass - unpack expanded outputs (including aoa/aod preds)
+        model_outputs = model(prompt, cur, inter_str)
+        if len(model_outputs) == 13:
+            d, p, s, c, ph, az_s, az_c, az, el_s, el_c, el, pathcounts, inter_str_logits = model_outputs
+            aod_az = None
+            aod_el = None
+        else:
+            (
+                d,
+                p,
+                s,
+                c,
+                ph,
+                az_s,
+                az_c,
+                az,
+                el_s,
+                el_c,
+                el,
+                aod_az_s,
+                aod_az_c,
+                aod_az,
+                aod_el_s,
+                aod_el_c,
+                aod_el,
+                pathcounts,
+                inter_str_logits,
+            ) = model_outputs
 
         # Get last timestep predictions
         d_t = d[:, -1]           # (1,)
@@ -86,23 +147,32 @@ def generate_paths_no_env(model, prompt, max_steps=25, stop_threshold=0.5):
         ph_t = ph[:, -1]         # (1,)
         az_t = az[:, -1]
         el_t = el[:, -1]
+        if aod_az is not None:
+            aod_az_t = aod_az[:, -1]
+            aod_el_t = aod_el[:, -1]
         inter_logits_t = inter_str_logits[:, -1]  # (1, 4)
 
         # Convert logits to binary predictions
         inter_pred_t = (torch.sigmoid(inter_logits_t) > 0.5).float()  # (1, 4) - binary [0, 1]
 
-        # Store outputs (delay, power, phase, aoa_az, aoa_el)
-        outputs.append(torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1))
+        # Store outputs (delay, power, phase, aoa_az, aoa_el, aod_az, aod_el)
+        if aod_az is None:
+            outputs.append(torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1))
+        else:
+            outputs.append(torch.stack([d_t, p_t, ph_t, az_t, el_t, aod_az_t, aod_el_t], dim=-1))
         outputs_inter_str.append(inter_pred_t)
 
         # Append predictions for next iteration
-        next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1).unsqueeze(1)  # (1, 1, 5)
+        if aod_az is None:
+            next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1).unsqueeze(1)
+        else:
+            next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t, aod_az_t, aod_el_t], dim=-1).unsqueeze(1)
         cur = torch.cat([cur, next_path], dim=1)
 
         # Use binary predictions for interactions
         inter_str = torch.cat([inter_str, inter_pred_t.unsqueeze(1)], dim=1)  # (1, t+2, 4)
 
-    return (torch.stack(outputs, dim=1).squeeze(0).detach().cpu(),  # (T, 5)
+    return (torch.stack(outputs, dim=1).squeeze(0).detach().cpu(),  # (T, 7)
             pathcounts, 
             torch.stack(outputs_inter_str, dim=1).squeeze(0).detach().cpu())  # (T, 4)
 
@@ -112,7 +182,7 @@ def generate_paths_no_env_batch(model, prompts, max_steps=25, stop_threshold=0.5
     Generate paths autoregressively for a batch of prompts.
     prompts: (B, prompt_dim)
     Returns:
-        generated: (B, T, 5) on CPU
+        generated: (B, T, 7) on CPU
         pathcounts: from model (last step)
         inter_str_pred: (B, T, 4) on CPU
     """
@@ -120,24 +190,57 @@ def generate_paths_no_env_batch(model, prompts, max_steps=25, stop_threshold=0.5
     device = next(model.parameters()).device
     B = prompts.size(0)
     prompts = prompts.to(device)
-    cur = torch.zeros(B, 1, 5, device=device)
+    cur = torch.zeros(B, 1, 7, device=device)
     inter_str = -1 * torch.ones(B, 1, 4, device=device)
     outputs = []
     outputs_inter_str = []
     for t in range(max_steps):
-        d, p, s, c, ph, az_s, az_c, az, el_s, el_c, el, pathcounts, inter_str_logits = model(
-            prompts, cur, inter_str
-        )
+        model_outputs = model(prompts, cur, inter_str)
+        if len(model_outputs) == 13:
+            d, p, s, c, ph, az_s, az_c, az, el_s, el_c, el, pathcounts, inter_str_logits = model_outputs
+            aod_az = None
+            aod_el = None
+        else:
+            (
+                d,
+                p,
+                s,
+                c,
+                ph,
+                az_s,
+                az_c,
+                az,
+                el_s,
+                el_c,
+                el,
+                aod_az_s,
+                aod_az_c,
+                aod_az,
+                aod_el_s,
+                aod_el_c,
+                aod_el,
+                pathcounts,
+                inter_str_logits,
+            ) = model_outputs
         d_t = d[:, -1]
         p_t = p[:, -1]
         ph_t = ph[:, -1]
         az_t = az[:, -1]
         el_t = el[:, -1]
+        if aod_az is not None:
+            aod_az_t = aod_az[:, -1]
+            aod_el_t = aod_el[:, -1]
         inter_logits_t = inter_str_logits[:, -1]
         inter_pred_t = (torch.sigmoid(inter_logits_t) > 0.5).float()
-        outputs.append(torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1))
+        if aod_az is None:
+            outputs.append(torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1))
+        else:
+            outputs.append(torch.stack([d_t, p_t, ph_t, az_t, el_t, aod_az_t, aod_el_t], dim=-1))
         outputs_inter_str.append(inter_pred_t)
-        next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1).unsqueeze(1)
+        if aod_az is None:
+            next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t], dim=-1).unsqueeze(1)
+        else:
+            next_path = torch.stack([d_t, p_t, ph_t, az_t, el_t, aod_az_t, aod_el_t], dim=-1).unsqueeze(1)
         cur = torch.cat([cur, next_path], dim=1)
         inter_str = torch.cat([inter_str, inter_pred_t.unsqueeze(1)], dim=1)
     return (
@@ -203,9 +306,8 @@ def masked_loss_pre_train(delay_pred, power_pred, sin_pred, cos_pred, phase_pred
             loss_path_length, loss_interaction)
 
 def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
-                az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred,el_pred,
-                path_length_predict, interaction_logits, targets, path_length_targets,
-                interaction_targets, finetune=None, pad_value=500, interaction_weight=0.1, path_padding_mask=None,
+                az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                *rest, finetune=None, pad_value=500, interaction_weight=0.1, path_padding_mask=None,
                 time_step_weighted=False):
     """
     Added interaction prediction loss as auxiliary task.
@@ -216,11 +318,37 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
         interaction_weight: weight for interaction loss
         time_step_weighted: if True, weight per-step losses by (1/2)**n for time index n (earlier steps weighted more)
     """
+    if len(rest) == 5:
+        aod_az_sin_pred = aod_az_cos_pred = aod_az_pred = None
+        aod_el_sin_pred = aod_el_cos_pred = aod_el_pred = None
+        path_length_predict, interaction_logits, targets, path_length_targets, interaction_targets = rest
+    elif len(rest) == 11:
+        (
+            aod_az_sin_pred,
+            aod_az_cos_pred,
+            aod_az_pred,
+            aod_el_sin_pred,
+            aod_el_cos_pred,
+            aod_el_pred,
+            path_length_predict,
+            interaction_logits,
+            targets,
+            path_length_targets,
+            interaction_targets,
+        ) = rest
+    else:
+        raise ValueError(f"Unexpected masked_loss argument count: {len(rest)} trailing arguments")
+
+    has_aod_targets = targets.size(-1) >= 7 and aod_az_sin_pred is not None
+
     delay_t = targets[:, :, 0]
     power_t = targets[:, :, 1]
     phase_t = targets[:, :, 2]
     az_t = targets[:, :, 3]
     el_t = targets[:, :, 4]
+    if has_aod_targets:
+        aod_az_t = targets[:, :, 5]
+        aod_el_t = targets[:, :, 6]
 
     sinp = torch.sin(phase_t)
     cosp = torch.cos(phase_t)
@@ -230,6 +358,11 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
 
     sin_el_t = torch.sin(el_t)
     cos_el_t = torch.cos(el_t)
+    if has_aod_targets:
+        sin_aod_az_t = torch.sin(aod_az_t)
+        cos_aod_az_t = torch.cos(aod_az_t)
+        sin_aod_el_t = torch.sin(aod_el_t)
+        cos_aod_el_t = torch.cos(aod_el_t)
     
     # Mask for valid paths
     # Mask for valid paths
@@ -266,6 +399,18 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
         loss_el_sin = weighted_mean((el_sin_pred - sin_el_t) ** 2)
         loss_el_cos = weighted_mean((el_cos_pred - cos_el_t) ** 2)
         loss_el = (loss_el_sin + loss_el_cos) / 2
+
+        if has_aod_targets:
+            loss_aod_az_sin = weighted_mean((aod_az_sin_pred - sin_aod_az_t) ** 2)
+            loss_aod_az_cos = weighted_mean((aod_az_cos_pred - cos_aod_az_t) ** 2)
+            loss_aod_az = (loss_aod_az_sin + loss_aod_az_cos) / 2
+
+            loss_aod_el_sin = weighted_mean((aod_el_sin_pred - sin_aod_el_t) ** 2)
+            loss_aod_el_cos = weighted_mean((aod_el_cos_pred - cos_aod_el_t) ** 2)
+            loss_aod_el = (loss_aod_el_sin + loss_aod_el_cos) / 2
+        else:
+            loss_aod_az = torch.tensor(0.0, device=delay_pred.device)
+            loss_aod_el = torch.tensor(0.0, device=delay_pred.device)
     else:
         # Existing losses (uniform over time)
         loss_delay = ((delay_pred - delay_t)**2)[mask].mean()
@@ -281,7 +426,19 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
 
         loss_el_sin = ((el_sin_pred - sin_el_t)**2)[mask].mean()
         loss_el_cos = ((el_cos_pred - cos_el_t)**2)[mask].mean()
-        loss_el = (loss_el_sin + loss_el_cos) / 2                 
+        loss_el = (loss_el_sin + loss_el_cos) / 2
+
+        if has_aod_targets:
+            loss_aod_az_sin = ((aod_az_sin_pred - sin_aod_az_t)**2)[mask].mean()
+            loss_aod_az_cos = ((aod_az_cos_pred - cos_aod_az_t)**2)[mask].mean()
+            loss_aod_az = (loss_aod_az_sin + loss_aod_az_cos) / 2
+
+            loss_aod_el_sin = ((aod_el_sin_pred - sin_aod_el_t)**2)[mask].mean()
+            loss_aod_el_cos = ((aod_el_cos_pred - cos_aod_el_t)**2)[mask].mean()
+            loss_aod_el = (loss_aod_el_sin + loss_aod_el_cos) / 2
+        else:
+            loss_aod_az = torch.tensor(0.0, device=delay_pred.device)
+            loss_aod_el = torch.tensor(0.0, device=delay_pred.device)
 
     loss_path_length = ((path_length_targets - path_length_predict)**2).mean() * 0.0
     
@@ -302,7 +459,7 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
     else:
         loss_interaction = torch.tensor(0.0, device=delay_pred.device)
     
-    total_loss = (loss_delay + loss_power + loss_phase + loss_az + loss_el +
+    total_loss = (loss_delay + loss_power + loss_phase + loss_az + loss_el + loss_aod_az + loss_aod_el +
                   loss_path_length + interaction_weight * loss_interaction)
     channel_loss = 0
     params = ChannelParameters()
@@ -367,7 +524,11 @@ def masked_loss(delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pr
     # total_loss = (loss_delay + 
     #              + interaction_weight * loss_interaction)
      
-    return (total_loss, loss_delay, loss_power, loss_phase, 
+    if has_aod_targets:
+        return (total_loss, loss_delay, loss_power, loss_phase,
+            loss_az, loss_el, loss_aod_az, loss_aod_el, loss_path_length, loss_interaction, channel_loss)
+
+    return (total_loss, loss_delay, loss_power, loss_phase,
         loss_az, loss_el, loss_path_length, loss_interaction, channel_loss)
 
 
@@ -770,7 +931,7 @@ def get_dataset_statistics(dataloader_obj):
 
     # 2. Path Features (Delay, Power, etc.)
     # These are lists of lists/arrays, so we flatten them while ignoring NaNs
-    path_keys = ["delay", "power", "phase", "aoa_az", "aoa_el"]
+    path_keys = ["delay", "power", "phase", "aoa_az", "aoa_el", "aod_az", "aod_el"]
     
     for k in path_keys:
         # Flatten all paths across all users and remove NaNs
@@ -780,7 +941,7 @@ def get_dataset_statistics(dataloader_obj):
         # Apply the same scaling as your __getitem__ to see "actual" input ranges
         if k == "delay": valid_data = valid_data * 1e6
         elif k == "power": valid_data = valid_data * 0.01
-        elif k in ["phase", "aoa_az", "aoa_el"]: valid_data = valid_data * (np.pi/180)
+        elif k in ["phase", "aoa_az", "aoa_el", "aod_az", "aod_el"]: valid_data = valid_data * (np.pi/180)
 
         stats[k] = {
             'mean': np.mean(valid_data),
@@ -842,12 +1003,12 @@ def add_noise_to_paths(
 ):
     """
     Add noise to path tokens (in-place-safe: returns a new tensor).
-    paths: (B, T, F) with F = [delay, power, phase, aoa_az, aoa_el]
+    paths: (B, T, F) with F = [delay, power, phase, aoa_az, aoa_el, aod_az, aod_el]
     valid_mask: (B, T) True = valid position (not padding)
     p_noise: probability a valid token's features get perturbed
     noise_params: dict. Supports two styles:
       (1) Per-parameter mean/std: "delay": {"mean": 0, "std": 0.1}, "power": {"mean": 0, "std": 0.01}, ...
-      (2) Legacy: "delay_frac", "power_db_std", "phase_deg_std", "aoa_az_std", "aoa_deg_std"
+      (2) Legacy: "delay_frac", "power_db_std", "phase_deg_std", "aoa_az_std", "aoa_deg_std", "aod_az_std", "aod_el_std"
     """
     if device is None:
         device = paths.device
@@ -890,22 +1051,33 @@ def add_noise_to_paths(
         deg_std = noise_params.get("phase_deg_std", 8.0)
         return torch.randn((B, T), device=device) * (np.deg2rad(deg_std))
 
-    def _get_aoa_noise(key, default_deg_std=5.0):
+    def _get_angle_noise(key, default_deg_std=5.0):
         if key in noise_params:
             m_rad = noise_params[key].get("mean", 0.0)
             s_rad = noise_params[key].get("std", 0.0)
             return m_rad + torch.randn((B, T), device=device) * s_rad
-        deg_std = noise_params.get("aoa_az_std" if key == "aoa_az" else "aoa_deg_std", default_deg_std)
+        legacy_key_map = {
+            "aoa_az": "aoa_az_std",
+            "aoa_el": "aoa_deg_std",
+            "aod_az": "aod_az_std",
+            "aod_el": "aod_el_std",
+        }
+        deg_std = noise_params.get(legacy_key_map.get(key, key), default_deg_std)
         return torch.randn((B, T), device=device) * (np.deg2rad(deg_std))
 
     out[:, :, 0] = torch.where(replace_mask, out[:, :, 0] + _get_delay_noise(), out[:, :, 0])
     out[:, :, 1] = torch.where(replace_mask, out[:, :, 1] + _get_power_noise(), out[:, :, 1])
     phase_noise_rad = _get_phase_noise()
     out[:, :, 2] = torch.where(replace_mask, wrap_angles(out[:, :, 2] + phase_noise_rad), out[:, :, 2])
-    aoa_az_rad = _get_aoa_noise("aoa_az", 5.0)
+    aoa_az_rad = _get_angle_noise("aoa_az", 5.0)
     out[:, :, 3] = torch.where(replace_mask, wrap_angles(out[:, :, 3] + aoa_az_rad), out[:, :, 3])
-    aoa_el_rad = _get_aoa_noise("aoa_el", 2.0)
+    aoa_el_rad = _get_angle_noise("aoa_el", 2.0)
     out[:, :, 4] = torch.where(replace_mask, wrap_angles(out[:, :, 4] + aoa_el_rad), out[:, :, 4])
+    if F > 5:
+        aod_az_rad = _get_angle_noise("aod_az", 5.0)
+        out[:, :, 5] = torch.where(replace_mask, wrap_angles(out[:, :, 5] + aod_az_rad), out[:, :, 5])
+    if F > 6:
+        aod_el_rad = _get_angle_noise("aod_el", 2.0)
+        out[:, :, 6] = torch.where(replace_mask, wrap_angles(out[:, :, 6] + aod_el_rad), out[:, :, 6])
 
     return out
-

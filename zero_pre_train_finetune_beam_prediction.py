@@ -38,7 +38,7 @@ from models import GPTPathDecoder, PathDecoderEnv, PathFormerBeamPredictor, Path
 from dataset.dataloaders import MySeqDataLoader,PreTrainMySeqDataLoader
 from utils.utils import *
 import pandas as pd
-# %%
+
 def evaluate_model(model, val_loader, max_generate=26, log_to_wandb=False):
     model.eval()
 

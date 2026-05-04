@@ -1,0 +1,33 @@
+\section{Experiments}
+\subsection{Datasets}
+
+
+We evaluate our method using the DeepMIMO dataset framework \cite{DBLP:journals/corr/abs-1902-06435}, which provides site-specific wireless datasets derived from ray-tracing simulations. DeepMIMO is especially well suited to our setting because it exposes not only channel responses, but also the geometric and path-level propagation structure underlying those channels. In particular, the framework supports the generation and storage of transmitter-receiver geometry, path interactions, and channel realizations in a unified format, which aligns naturally with our formulation of multipath propagation as a sequential prediction problem.  A key advantage of DeepMIMO is that it acts as a bridge between ray tracers and wireless simulation pipelines. The current DeepMIMO toolchain supports integration with NVIDIA Sionna RT \cite{hoydis2023sionnaopensourcelibrarynextgeneration}, Remcom Wireless InSite \cite{remcom}, Nvidia AODT \cite{aodt} and other ray-tracing sources through standardised conversion and dataset-generation utilities. This makes it possible to construct realistic, reproducible, and shareable datasets across a wide range of environments while preserving the physical propagation information needed for learning-based channel modelling.
+
+
+
+It is worth noting that DeepMIMO is fundamentally a ray-tracing-based dataset framework rather than a native real-world measurement dataset. In other words, the datasets are generated from high-fidelity propagation simulations and converted ray-tracing outputs, rather than being primarily collections of measured over-the-air channel data. This makes DeepMIMO particularly valuable for controlled and reproducible benchmarking, though it should be interpreted as a physically grounded simulation benchmark rather than a purely measurement-driven one.
+
+
+\begin{table}[t]
+\centering
+\caption{Cross-scenario MAE comparison over 32 scenarios.}
+\label{tab:main_mae_results}
+% \scriptsize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lcccccccc}
+\toprule
+Model & Delay & Power & AoA Az & AoA El & AoD Az & AoD El & Int. Acc. & Int. F1 \\
+\midrule
+Direct & 0.108 $\pm$ 0.075 & 7.346 $\pm$ 3.879 & 32.142 $\pm$ 23.252 & 4.766 $\pm$ 4.287 & 31.002 $\pm$ 21.519 & 3.934 $\pm$ 3.373 & 0.874 $\pm$ 0.069 & 0.792 $\pm$ 0.201 \\
+Residual & 0.088 $\pm$ 0.062 & 4.294 $\pm$ 3.051 & 29.556 $\pm$ 21.950 & 4.790 $\pm$ 4.251 & 28.842 $\pm$ 20.120 & 3.775 $\pm$ 3.305 & 0.902 $\pm$ 0.063 & 0.845 $\pm$ 0.172 \\
+Corridor & \textbf{0.068} $\pm$ \textbf{0.054} & \textbf{3.262} $\pm$ \textbf{2.857} & \textbf{23.099} $\pm$ \textbf{20.916} & \textbf{3.806} $\pm$ \textbf{3.458} & \textbf{21.390} $\pm$ \textbf{19.742} & \textbf{3.155} $\pm$ \textbf{2.840} & \textbf{0.928} $\pm$ \textbf{0.059} & \textbf{0.896} $\pm$ \textbf{0.143} \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+
+
+
+

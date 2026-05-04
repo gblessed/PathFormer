@@ -1,0 +1,103 @@
+\section{Additional Model and Training Details}
+\label{appendix:model_training}
+
+This appendix summarizes the model configurations and training settings used in our experiments. All models operate on path tokens of the form
+\(
+[\tau,\rho,\phi,\theta^{\mathrm{aoa}}_{\mathrm{az}},\theta^{\mathrm{aoa}}_{\mathrm{el}},\theta^{\mathrm{aod}}_{\mathrm{az}},\theta^{\mathrm{aod}}_{\mathrm{el}}]
+\)
+and predict a multi-label interaction vector for each path. We use a zero-valued start token, sort paths by descending received power, and predict the path count with a dedicated length head to terminate generation.
+
+\begin{table}[h]
+\centering
+\caption{Summary of the three model configurations used in the main experiments.}
+\label{tab:appendix_model_configs}
+\small
+\begin{tabular}{lccc}
+\toprule
+Model & Prompt & Decoder & Additional components \\
+\midrule
+Direct & tx/rx positions & 8 layers, 8 heads, 512 dim & none \\
+Residual & Direct + KMeans prior & 8 layers, 8 heads, 512 dim & first-path residual heads \\
+Corridor & Residual + Environmental RAG & 12 layers, 8 heads, 1024 dim & local/corridor retrieval features \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Prompt construction.}
+The direct model conditions on the concatenated transmitter and receiver positions. The residual model augments this prompt with a transmitter-specific first-path KMeans prior consisting of the retrieved cluster centroid and cluster standard deviation for delay and power. The corridor-aware model further augments the prompt with Environmental RAG features, including dense local summaries around the transmitter and receiver, dense summaries of the top-$K$ objects closest to the transmitter--receiver corridor, and sparse multi-scale counts and height summaries within fixed radii and corridor bins.
+
+\paragraph{Corridor retrieval configuration.}
+Unless otherwise stated, the first-path codebook uses \(K=25\) KMeans clusters per transmitter. For the environmental retrieval module, we use \(K_{\mathrm{local}}=5\) nearest local objects, \(K_{\mathrm{corr}}=5\) nearest corridor objects, \(B=8\) corridor bins, and local/corridor radii \(\{25, 50, 100\}\) meters. Each dense object descriptor includes distance, height, footprint area, and material properties (permittivity, conductivity, and scattering coefficient) when available.
+
+\paragraph{Training setup.}
+We split users within each transmitter into train and validation partitions and retain only users with at least one valid path. Path delays are converted to microseconds, powers are scaled by \(0.01\), and angles are represented in radians. All models are trained with batch size \(128\) using AdamW and cosine-annealing warm restarts. For the multi-environment corridor model used in the main results, we train for \(50\) epochs with learning rate \(2\times10^{-5}\), interaction-loss weight \(0.01\), and optional target corruption controlled by the noise probability hyperparameter. When finetuning scenario-specific models from multi-environment checkpoints, we keep the same optimizer and scheduler settings and initialize from the best concatenated checkpoint before adaptation.
+
+\paragraph{Evaluation protocol.}
+We report root-mean-squared error and mean absolute error for delay, power, AoA, and AoD, together with interaction accuracy and interaction F1. For first-step residual models, the dominant path is predicted as the sum of the retrieved KMeans centroid and a learned residual correction, while later paths are generated autoregressively in the same way as the direct model.
+
+\section{Scenario Summary}
+\label{appendix:scenarios}
+
+Table~\ref{tab:appendix_scenarios_a} and Table~\ref{tab:appendix_scenarios_b} summarize the 32 DeepMIMO scenarios used in our experiments. Across these environments, the number of active users ranges from \(25{,}669\) to \(641{,}215\), the LoS user ratio ranges from \(0.042\) to \(0.763\), the mean number of paths per active user ranges from \(2.3\) to \(21.4\), and the mean transmitter--receiver distance ranges from \(39.3\) m to \(178.7\) m. This diversity is important because it covers both dense urban scenes with tall structures and more open layouts with fewer obstructions.
+
+\begin{table*}[t]
+\centering
+\caption{Scenario summary for the first half of the evaluation environments. We report the number of unique transmitter positions, active users, LoS user ratio, mean number of paths per active user, mean transmitter--receiver distance, number of buildings, and scene dimensions (width \(\times\) length \(\times\) height, in meters).}
+\label{tab:appendix_scenarios_a}
+\scriptsize
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrrrrr}
+\toprule
+Scenario & TXs & Active users & LoS ratio & Mean paths & Mean dist. (m) & Buildings & Scene size (m) \\
+\midrule
+\texttt{boston5g\_3p5} & 1 & 105,997 & 0.042 & 6.5 & 178.7 & 67 & 799$\times$649$\times$190 \\
+\texttt{city\_0\_newyork\_3p5\_s} & 3 & 68,795 & 0.203 & 15.1 & 97.9 & 107 & 352$\times$197$\times$18 \\
+\texttt{city\_10\_austin\_3p5} & 3 & 78,942 & 0.285 & 21.4 & 86.7 & 174 & 500$\times$790$\times$43 \\
+\texttt{city\_11\_santaclara\_3p5} & 3 & 78,793 & 0.291 & 20.3 & 102.3 & 200 & 1260$\times$1244$\times$19 \\
+\texttt{city\_12\_fortworth\_3p5} & 3 & 74,034 & 0.120 & 13.0 & 109.3 & 138 & 1636$\times$768$\times$11 \\
+\texttt{city\_13\_columbus\_3p5} & 3 & 33,986 & 0.089 & 17.3 & 89.7 & 178 & 405$\times$327$\times$20 \\
+\texttt{city\_16\_sanfrancisco\_3p5\_lwm} & 3 & 42,871 & 0.336 & 2.6 & 118.1 & 74 & 1550$\times$2284$\times$11 \\
+\texttt{city\_17\_seattle\_3p5\_s} & 3 & 67,312 & 0.180 & 14.5 & 115.0 & 18 & 248$\times$243$\times$43 \\
+\texttt{city\_18\_denver\_3p5} & 3 & 88,622 & 0.109 & 16.0 & 98.7 & 546 & 996$\times$820$\times$20 \\
+\texttt{city\_19\_oklahoma\_3p5\_s} & 3 & 86,718 & 0.330 & 19.9 & 108.7 & 16 & 234$\times$275$\times$19 \\
+\texttt{city\_1\_losangeles\_3p5} & 3 & 55,591 & 0.141 & 16.2 & 77.8 & 146 & 500$\times$438$\times$11 \\
+\texttt{city\_23\_beijing\_3p5} & 1 & 45,705 & 0.327 & 16.6 & 114.0 & 189 & 622$\times$566$\times$41 \\
+\texttt{city\_2\_chicago\_3p5} & 3 & 25,669 & 0.117 & 16.1 & 92.4 & 106 & 332$\times$391$\times$66 \\
+\texttt{city\_31\_barcelona\_3p5} & 1 & 37,502 & 0.399 & 2.8 & 112.9 & 468 & 1217$\times$1123$\times$130 \\
+\texttt{city\_35\_san\_francisco\_3p5} & 1 & 28,204 & 0.258 & 3.2 & 115.1 & 220 & 570$\times$526$\times$18 \\
+\texttt{city\_3\_houston\_3p5} & 3 & 67,996 & 0.223 & 18.5 & 112.9 & 90 & 793$\times$889$\times$21 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}
+
+\begin{table*}[t]
+\centering
+\caption{Scenario summary for the second half of the evaluation environments.}
+\label{tab:appendix_scenarios_b}
+\scriptsize
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrrrrr}
+\toprule
+Scenario & TXs & Active users & LoS ratio & Mean paths & Mean dist. (m) & Buildings & Scene size (m) \\
+\midrule
+\texttt{city\_47\_chicago\_3p5} & 1 & 28,088 & 0.229 & 2.3 & 112.8 & 450 & 485$\times$3227$\times$527 \\
+\texttt{city\_4\_phoenix\_3p5} & 3 & 61,223 & 0.161 & 18.3 & 101.9 & 110 & 450$\times$800$\times$21 \\
+\texttt{city\_5\_philadelphia\_3p5} & 3 & 32,143 & 0.075 & 17.9 & 112.2 & 182 & 1135$\times$496$\times$123 \\
+\texttt{city\_6\_miami\_3p5} & 3 & 82,306 & 0.136 & 15.4 & 96.6 & 160 & 812$\times$797$\times$21 \\
+\texttt{city\_72\_capetown\_3p5} & 1 & 641,215 & 0.628 & 2.6 & 39.3 & 66 & 873$\times$878$\times$19 \\
+\texttt{city\_7\_sandiego\_3p5} & 3 & 67,939 & 0.214 & 18.0 & 102.4 & 104 & 716$\times$639$\times$22 \\
+\texttt{city\_84\_baoding\_3p5} & 1 & 185,076 & 0.483 & 9.9 & 162.5 & 2 & 326$\times$594$\times$16 \\
+\texttt{city\_86\_ankara\_3p5} & 1 & 168,050 & 0.179 & 10.0 & 161.7 & 12 & 459$\times$438$\times$20 \\
+\texttt{city\_88\_tongshan\_3p5} & 1 & 227,315 & 0.574 & 10.0 & 164.5 & 6 & 336$\times$416$\times$20 \\
+\texttt{city\_89\_nairobi\_3p5} & 1 & 320,104 & 0.763 & 10.0 & 173.3 & 13 & 445$\times$421$\times$84 \\
+\texttt{city\_8\_dallas\_3p5} & 3 & 92,351 & 0.179 & 18.2 & 84.0 & 96 & 1956$\times$1497$\times$9 \\
+\texttt{city\_91\_xiangyang\_3p5} & 1 & 183,560 & 0.065 & 9.6 & 169.6 & 36 & 397$\times$395$\times$19 \\
+\texttt{city\_92\_s\~aopaulo\_3p5} & 1 & 198,036 & 0.282 & 9.8 & 169.5 & 24 & 371$\times$409$\times$92 \\
+\texttt{city\_95\_delhi\_3p5} & 1 & 284,893 & 0.751 & 10.0 & 167.0 & 7 & 413$\times$398$\times$18 \\
+\texttt{city\_96\_osaka\_3p5} & 1 & 244,790 & 0.401 & 9.5 & 171.6 & 54 & 372$\times$429$\times$147 \\
+\texttt{city\_9\_sanfrancisco\_3p5} & 3 & 61,675 & 0.137 & 18.4 & 80.0 & 108 & 428$\times$434$\times$20 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}

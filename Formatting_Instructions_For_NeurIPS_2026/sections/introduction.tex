@@ -1,0 +1,41 @@
+\section{Introduction}
+Foundation models have reshaped artificial intelligence in text, vision, and multimodal learning by showing that broad pretraining can produce reusable backbones that transfer across many downstream tasks ~\cite{bommasani2021opportunities,brown2020language,dosovitskiy2020image,radford2021clip}.  \textbf{Emergent abilities?} In natural language processing, large language models pretrained on broad corpora now serve as general backbones for text classification, generation, and reasoning ~\cite{devlin2019bert,vaswani2017attention, guo2025deepseek}. In computer vision, and multimodal setups like vision-language and vision-language action learning, large pretrained transformers and contrastive image-text models provide similar transfer across many tasks with limited task-specific supervision \cite{pmlr-v270-kim25c, alayrac2022flamingo,  dosovitskiy2020image,radford2021clip}. The shared principle is simple: with the right pretraining object, large-scale self-supervised learning can learn representations that are reusable across different tasks. 
+
+The wireless communication domain is another area where foundation models could thrive. This is because, as wireless signals are propagated between transmitters and receivers in different environments in the physical world, they follow the laws of Electro-Magnetic (EM) wave propagation. The propagation path of a single wave can experience complex interactions such as reflection, refraction, scattering and diffraction as it travels through different environments. These interactions become even more diverse when comparing the indoor and outdoor settings and for different weather conditions. A wireless foundation model would attempt to model this complex relationship that exists between EM wave paths and the physical environment.  In a similar way to language and vision, the foundation model with this general understanding can then be used for solving different downstream tasks in the environment. Typically, downstream tasks like channel estimation, beam prediction, user localisation, and sensing are important in optimising the communication experience between users. These tasks are even more important in 5G systems that use Millimeter-wave (mmWave) and massive multiple-input multiple-output (MIMO) systems with high data rates and fine spatial resolution, but they also impose stringent requirements on beam alignment, channel acquisition, and environment-aware inference.
+
+Several recent works have began attempts to create these wireless foundation models. WiFo \cite{liu2025wifo} and ChannelGPT \cite{yu2024channelgpt} proposed foundation models for channel prediction and showed zero-shot generalisation for the same channel prediction task across heterogeneous Channel State Information (CSI) configurations. Large Wireless Models \cite{alikhani2024lwm} learns contextualised channel embeddings from large-scale wireless channel data and reports gains on Line of Sight (LoS) classification and beam prediction.  WirelessGPT \cite{yang2025wirelessgpt} extends the same philosophy by showing the use of the models on the downstream tasks of human activity recognition and wireless environment reconstruction. The key similarity of all these works is that they work at the channel level, with the pretraining objective been some variant of Masked Channel Modelling (MCM). This MCM is shown in Equation \ref{eq:mcm}, where the foundation model $f$ makes predictions for masked all channels positions $i \in M$, with this masking done across subcarrier, time, or space and with $h_{i}$  been the ground truth channel.
+
+\begin{equation}
+\ell_{MCM} = \frac{1}{|M|} \sum_{i \in M} || f({i|\{h_{j}\}_{j \notin M }\ }) - h_{i} ||^{2}
+\label{eq:mcm}
+\end{equation}
+
+
+
+
+The central question, however, is whether the \emph{channel} is the right pretraining object. For a given link, the channel on subcarrier $k$ can be written as a superposition of propagation paths,
+\begin{equation}
+\vect{H}[k]
+=
+\sum_{\ell=1}^{L}
+\alpha_{\ell}
+\exp\!\left(-j2\pi f_k\tau_{\ell}\right)
+\vect{a}_{\mathrm{rx}}\!\left(\Omega^{\mathrm{rx}}_{\ell}\right)
+\vect{a}_{\mathrm{tx}}^{H}\!\left(\Omega^{\mathrm{tx}}_{\ell}\right),
+\label{eq:intro_channel}
+\end{equation}
+where each path is characterized by a complex gain $\alpha_{\ell}$, delay $\tau_{\ell}$, and arrival/departure angles $\Omega^{\mathrm{rx}}_{\ell}$ and $\Omega^{\mathrm{tx}}_{\ell}$. Equation~\eqref{eq:intro_channel} shows the limitation of channel-level pretraining: the channel tensor mixes a variable number of path events and then further entangles them with array responses, subcarrier sampling, and system configuration. This makes it harder to isolate the environment-dependent structure that actually drives wireless behaviour. Also, users at different locations may experience a similar aggregate channel, therefore limiting the model's ability to disambiguate between the environmental signature of those users. 
+
+We argue in this paper that a more fundamental pretraining object is the \emph{multipath process}. \emph{Path-level modeling preserves variable path cardinality, dominant-path ordering, angular structure, and interpretable physical attributes such as delay and power}. It is therefore better aligned with the idea of learning a reusable representation of wireless propagation itself rather than of one particular channel rendering. We therefore propose \emph{PathFormer}, which formulates wireless pretraining as \emph{next-path prediction} analogous to the next token prediction done in language modelling. Each transmitter-receiver pair is converted into an ordered sequence of propagation-path tokens. An autoregressive transformer is then pretrained over path sequences collected from multiple environments, in the same spirit that language models are pretrained by next-token prediction. The pretraining phase is deliberately independent of user locations; its role is to capture the general behavior of paths across different environments, not to memorize per-user coordinates. After pretraining, the backbone is adapted to target environments and reused for downstream tasks.
+<< Add the problems to be answered in the modelling >>
+
+To the best of our knowledge, PathFormer is the first wireless foundation model at the multipath level, with a formulation that represents wireless propagation as an autoregressive sequence of individual path tokens and uses \emph{next-path prediction} as the pretraining objective. A recent adjacent effort, WiCo-MG, studies multipath generation through a multipath-map representation and a different sensing-driven setup \cite{han2025wicomg}. PathFormer is instead centred on tokenized per-link path sequences and their transfer value as a reusable wireless backbone.
+
+The main contributions of this paper are summarised below:
+\begin{enumerate}[leftmargin=1.5em]
+    \item We frame the need for a wireless foundation model through the same lens that has proven successful in text and show that the multipath process is a more fundamental pretraining object than the channel tensor itself. We introduce PathFormer, a path-level transformer trained with \emph{next-path prediction} and open-source the model's weights.
+    \item We design a location-independent multienvironment pretraining stage whose purpose is to learn generic path behavior across environments, followed by target-environment adaptation and downstream reuse.
+    \item We show that the autoregressive approach of the Pathformer outperforms non-autoregressive setups.
+    \item We define and show that the pretrained PathFormer backbone can support downstream tasks such as channel user localisation, reconstruction, beam prediction, and \textbf{LoS classification}.
+
+\end{enumerate}

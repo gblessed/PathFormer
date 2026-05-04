@@ -89,7 +89,7 @@ class GPTPathDecoderEnv(nn.Module):
     def forward(self, prompts, paths, interactions, environment, environment_properties, pre_train=False):
         """
         prompts: (B, prompt_dim)
-        paths: (B, T, 4)
+        paths: (B, T, 5) or (B, T, 7) when include_aod=True
         interactions: (B,T,4)
         environment: (B, 4)
         environment_properties: (B, T2, 6)
@@ -188,7 +188,7 @@ class GPTPathDecoder(nn.Module):
         # Path token embedding
         # Now: [delay, power, sin(phase), cos(phase), sin(az), cos(az), sin(el), cos(el)] => 8
         # plus interactions (4) => combined input dim = 12
-        self.path_in = nn.Linear(12, hidden_dim)
+        self.path_in = nn.Linear(16, hidden_dim)
 
         self.pos_emb = nn.Embedding(max_T + prefix_len, hidden_dim)
 
@@ -348,7 +348,7 @@ class PathDecoderEnv(nn.Module):
                     nn.GELU(),
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.GELU(),
-                    nn.Linear(hidden_dim, 6),
+                    nn.Linear(hidden_dim, 10),
                     nn.Tanh(),
                 )
         self.pathcount_head = nn.Sequential(
@@ -360,7 +360,7 @@ class PathDecoderEnv(nn.Module):
     def forward(self, prompts, paths, interactions, environment_properties, environment, pre_train):
         """
         prompts: (B, prompt_dim)
-        paths: (B, T, 4)
+        paths: (B, T, 7)
         interactions: (B,T,4)
         environment: (B, 4)
         environment_properties: (B, T2, 6)
@@ -399,7 +399,28 @@ class PathDecoderEnv(nn.Module):
         sin_el = torch.sin(aoa_el)
         cos_el = torch.cos(aoa_el)
 
-        x = torch.stack([paths[:,:,0], paths[:,:,1], sinp, cosp, sin_az, cos_az, sin_el,cos_el ], dim=-1)
+        aod_az = paths[:, :, 5]
+        sin_aod_az = torch.sin(aod_az)
+        cos_aod_az = torch.cos(aod_az)
+
+        aod_el = paths[:, :, 6]
+        sin_aod_el = torch.sin(aod_el)
+        cos_aod_el = torch.cos(aod_el)
+
+        x = torch.stack([
+            paths[:, :, 0],
+            paths[:, :, 1],
+            sinp,
+            cosp,
+            sin_az,
+            cos_az,
+            sin_el,
+            cos_el,
+            sin_aod_az,
+            cos_aod_az,
+            sin_aod_el,
+            cos_aod_el,
+        ], dim=-1)
 
 
         interactions_clean = interactions.clone()
@@ -444,10 +465,16 @@ class PathDecoderEnv(nn.Module):
         az_cos_pred = out[:, :, 3]
         el_sin_pred = out[:, :, 4]
         el_cos_pred = out[:, :, 5]
+        aod_az_sin_pred = out[:, :, 6]
+        aod_az_cos_pred = out[:, :, 7]
+        aod_el_sin_pred = out[:, :, 8]
+        aod_el_cos_pred = out[:, :, 9]
 
         phase_pred = torch.atan2(phase_sin_pred, phase_cos_pred)
         az_pred = torch.atan2(az_sin_pred, az_cos_pred)
         el_pred = torch.atan2(el_sin_pred, el_cos_pred)
+        aod_az_pred = torch.atan2(aod_az_sin_pred, aod_az_cos_pred)
+        aod_el_pred = torch.atan2(aod_el_sin_pred, aod_el_cos_pred)
         interaction_logits = self.interaction_head(h_paths)
         ## path count prediction
         prefix_flat = prefix.reshape(B, -1)
@@ -455,21 +482,24 @@ class PathDecoderEnv(nn.Module):
 
         return (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
             az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+            aod_az_sin_pred, aod_az_cos_pred, aod_az_pred,
+            aod_el_sin_pred, aod_el_cos_pred, aod_el_pred,
             pathcounts, interaction_logits)
 
 
 class PathDecoder(nn.Module):
-    def __init__(self, prompt_dim=6, hidden_dim=512, n_layers=6, n_heads=4,  max_T = 35, prefix_len=4, pad_value=500):
+    def __init__(self, prompt_dim=6, hidden_dim=512, n_layers=6, n_heads=4,  max_T = 35, prefix_len=4, pad_value=500, include_aod=False):
         super().__init__()
         self.pad_value = pad_value
         self.hidden_dim = hidden_dim
         self.prefix_len = prefix_len
         self.max_T = max_T
+        self.include_aod = include_aod
         # Project prompt → conditioning token
         # self.prompt_proj = nn.Linear(prompt_dim, hidden_dim)
         self.prompt_to_prefix = nn.Linear(prompt_dim, prefix_len * hidden_dim)
         # Path token embedding: delay, power, sin(phase), cos(phase), is_last
-        self.path_in = nn.Linear(12, hidden_dim)
+        self.path_in = nn.Linear(16 if include_aod else 12, hidden_dim)
 
         # Positional embedding for sequence steps
         self.pos_emb = nn.Embedding(max_T, hidden_dim)  # supports up to 25 paths
@@ -501,7 +531,7 @@ class PathDecoder(nn.Module):
                     nn.GELU(),
                     nn.Linear(hidden_dim, hidden_dim),
                     nn.GELU(),
-                    nn.Linear(hidden_dim, 6),
+                    nn.Linear(hidden_dim, 10 if include_aod else 6),
                     # nn.Tanh(),
                 )
         self.pathcount_head = nn.Sequential(
@@ -553,7 +583,17 @@ class PathDecoder(nn.Module):
         sin_el = torch.sin(aoa_el)
         cos_el = torch.cos(aoa_el)
 
-        x = torch.stack([paths[:,:,0], paths[:,:,1], sinp, cosp, sin_az, cos_az, sin_el,cos_el ], dim=-1)
+        x_parts = [paths[:, :, 0], paths[:, :, 1], sinp, cosp, sin_az, cos_az, sin_el, cos_el]
+        if self.include_aod:
+            aod_az = paths[:, :, 5]
+            sin_aod_az = torch.sin(aod_az)
+            cos_aod_az = torch.cos(aod_az)
+            aod_el = paths[:, :, 6]
+            sin_aod_el = torch.sin(aod_el)
+            cos_aod_el = torch.cos(aod_el)
+            x_parts.extend([sin_aod_az, cos_aod_az, sin_aod_el, cos_aod_el])
+
+        x = torch.stack(x_parts, dim=-1)
 
 
         interactions_clean = interactions.clone()
@@ -586,7 +626,7 @@ class PathDecoder(nn.Module):
         h_paths = h[:, :, :]
 
         # Predict next-step parameters
-        out = self.out(h_paths)  # (B, T, 5)
+        out = self.out(h_paths)
 
         delay_pred = self.out_delay(h_paths).squeeze(-1)
         power_pred = self.out_power(h_paths).squeeze(-1)
@@ -606,6 +646,19 @@ class PathDecoder(nn.Module):
         ## path count prediction
         prefix_flat = prefix.reshape(B, -1)
         pathcounts = self.pathcount_head(prefix_flat)
+
+        if self.include_aod:
+            aod_az_sin_pred = out[:, :, 6]
+            aod_az_cos_pred = out[:, :, 7]
+            aod_el_sin_pred = out[:, :, 8]
+            aod_el_cos_pred = out[:, :, 9]
+            aod_az_pred = torch.atan2(aod_az_sin_pred, aod_az_cos_pred)
+            aod_el_pred = torch.atan2(aod_el_sin_pred, aod_el_cos_pred)
+            return (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
+                az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
+                aod_az_sin_pred, aod_az_cos_pred, aod_az_pred,
+                aod_el_sin_pred, aod_el_cos_pred, aod_el_pred,
+                pathcounts, interaction_logits)
 
         return (delay_pred, power_pred, phase_sin_pred, phase_cos_pred, phase_pred,
             az_sin_pred, az_cos_pred, az_pred, el_sin_pred, el_cos_pred, el_pred,
@@ -628,7 +681,16 @@ class PathDecoder(nn.Module):
         aoa_el = paths[:, :, 4]
         sin_el = torch.sin(aoa_el)
         cos_el = torch.cos(aoa_el)
-        x = torch.stack([paths[:, :, 0], paths[:, :, 1], sinp, cosp, sin_az, cos_az, sin_el, cos_el], dim=-1)
+        x_parts = [paths[:, :, 0], paths[:, :, 1], sinp, cosp, sin_az, cos_az, sin_el, cos_el]
+        if self.include_aod:
+            aod_az = paths[:, :, 5]
+            sin_aod_az = torch.sin(aod_az)
+            cos_aod_az = torch.cos(aod_az)
+            aod_el = paths[:, :, 6]
+            sin_aod_el = torch.sin(aod_el)
+            cos_aod_el = torch.cos(aod_el)
+            x_parts.extend([sin_aod_az, cos_aod_az, sin_aod_el, cos_aod_el])
+        x = torch.stack(x_parts, dim=-1)
         interactions_clean = interactions.clone()
         interactions_clean[interactions_clean == -1] = 0
         x = torch.cat([x, interactions_clean], dim=-1)
