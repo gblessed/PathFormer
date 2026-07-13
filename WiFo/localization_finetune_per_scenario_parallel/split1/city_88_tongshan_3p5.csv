@@ -1,0 +1,3 @@
+scenario,status,best_epoch,train_samples,val_samples,train_loss,train_mde_m,val_loss,val_mde_m,val_median_mde_m,val_p90_mde_m,checkpoint,error
+city_88_tongshan_3p5,error,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,Missing train data for city_88_tongshan_3p5: /home/blessedg/Pathformer/WiFo/dataset/blessed_task_user_loc/_city_88_tongshan_3p5_train_data.pt
+city_88_tongshan_3p5,ok,42,181776,45521,5.4691679160177955,9.43790340423584,41.465730507431786,73.39263916015625,48.521419525146484,176.34507751464844,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

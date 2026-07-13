@@ -1,0 +1,2 @@
+stage:0, epoch:1, best nmse: 1.0027419328689575
+{'city_1_losangeles_3p5': {'temporal': {0.5: {'nmse': np.float32(1.0027419), 'nmse_db': np.float32(0.011891767), 'last_nmse': np.float32(1.0046469), 'last_nmse_db': np.float32(0.020134473)}}}}

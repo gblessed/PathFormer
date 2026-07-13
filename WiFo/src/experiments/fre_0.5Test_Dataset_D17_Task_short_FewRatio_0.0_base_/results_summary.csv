@@ -1,0 +1,2 @@
+stage,epoch,dataset,mask_strategy,mask_ratio,nmse,nmse_db,last_nmse,last_nmse_db
+0,0,D17,fre,0.5,0.31794402,-4.9764934,0.25112316,-6.0011325

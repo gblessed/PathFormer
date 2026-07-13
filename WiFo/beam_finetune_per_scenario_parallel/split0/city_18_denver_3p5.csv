@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,num_classes,train_loss,train_top1_acc,train_top3_acc,val_loss,val_top1_acc,val_top3_acc,checkpoint,error
+city_18_denver_3p5,ok,85,68257,13040,64,2.1028871575899912,0.3787596876576327,0.6305140864620826,3.3946144779766994,0.20138036815301041,0.40391104320075616,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

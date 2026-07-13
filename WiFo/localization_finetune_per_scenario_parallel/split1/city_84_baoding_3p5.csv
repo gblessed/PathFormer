@@ -1,0 +1,3 @@
+scenario,status,best_epoch,train_samples,val_samples,train_loss,train_mde_m,val_loss,val_mde_m,val_median_mde_m,val_p90_mde_m,checkpoint,error
+city_84_baoding_3p5,error,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,Missing train data for city_84_baoding_3p5: /home/blessedg/Pathformer/WiFo/dataset/blessed_task_user_loc/_city_84_baoding_3p5_train_data.pt
+city_84_baoding_3p5,ok,46,148090,36919,5.233237088105738,9.120301246643066,39.46216480959088,69.57978057861328,52.36331558227539,158.4309844970703,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

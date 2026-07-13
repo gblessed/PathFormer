@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,train_loss,train_mde_m,val_loss,val_mde_m,val_median_mde_m,val_p90_mde_m,checkpoint,error
+city_3_houston_3p5,ok,13,54346,9508,8.327444334707161,14.109424591064453,36.58135608228556,61.43061065673828,53.7562255859375,116.51530456542969,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

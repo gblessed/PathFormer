@@ -1,0 +1,2 @@
+stage:0, epoch:0, best nmse: 0.49399688839912415
+{'city_0_newyork_3p5_s': {'fre': {0.5: {'nmse': np.float32(0.4939969), 'nmse_db': np.float32(-3.062758), 'last_nmse': np.float32(1.0199002), 'last_nmse_db': np.float32(0.08557678)}}}}

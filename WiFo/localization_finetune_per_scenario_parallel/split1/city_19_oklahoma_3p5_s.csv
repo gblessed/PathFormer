@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,train_loss,train_mde_m,val_loss,val_mde_m,val_median_mde_m,val_p90_mde_m,checkpoint,error
+city_19_oklahoma_3p5_s,ok,47,69266,14042,2.9341173540780696,5.373077392578125,37.60056578659668,62.89535140991211,52.91783142089844,128.82594299316406,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

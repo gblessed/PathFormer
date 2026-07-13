@@ -1,0 +1,4 @@
+stage:0, epoch:0, best nmse: 1.002935528755188
+{'city_1_losangeles_3p5': {'temporal': {0.5: {'nmse': np.float32(1.0029355), 'nmse_db': np.float32(0.0127301635), 'last_nmse': np.float32(1.0011089), 'last_nmse_db': np.float32(0.0048131575)}}}}
+stage:0, epoch:1, best nmse: 1.0027419328689575
+{'city_1_losangeles_3p5': {'temporal': {0.5: {'nmse': np.float32(1.0027419), 'nmse_db': np.float32(0.011891767), 'last_nmse': np.float32(1.0046469), 'last_nmse_db': np.float32(0.020134473)}}}}

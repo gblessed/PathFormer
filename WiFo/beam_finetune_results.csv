@@ -1,0 +1,14 @@
+scenario,status,best_epoch,train_samples,val_samples,num_classes,train_loss,train_top1_acc,train_top3_acc,val_loss,val_top1_acc,val_top3_acc,checkpoint,error
+city_0_newyork_3p5_s,error,,,,,,,,,,,./weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_1_losangeles_3p5,error,,,,,,,,,,,./weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_2_chicago_3p5,error,,,,,,,,,,,./weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_6_miami_3p5,ok,12,65843,11924,64,1.5044673730848974,0.5276491047101516,0.7971234603608044,1.9556363329556274,0.4527843005702784,0.7039584032803804,./weights/wifo_base.pkl,

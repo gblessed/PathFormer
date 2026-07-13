@@ -16,6 +16,7 @@ from dataset.dataloaders import PreTrainMySeqDataLoader
 from models import PathDecoder
 from utils.utils import add_noise_to_paths, masked_loss
 
+import time
 warnings.filterwarnings("ignore", category=UserWarning)
 
 csv_log_file = "muldims_weighted_first_step_residual_results.csv"
@@ -291,7 +292,7 @@ def evaluate_model(model, val_loader, max_generate=25):
             return 0.0, 0.0
         arr = np.asarray(values, dtype=np.float64)
         return float(np.mean(arr)), float(np.std(arr))
-
+    
     with torch.no_grad():
         for prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask, first_step_baselines in tqdm(val_loader, desc="Evaluating", leave=True):
             prompts = prompts.cuda()
@@ -299,13 +300,15 @@ def evaluate_model(model, val_loader, max_generate=25):
             path_lengths = path_lengths.cuda()
             interactions = interactions.cuda()
             first_step_baselines = first_step_baselines.cuda()
-
+            start_cpu = time.process_time()
             generated, path_lengths_pred, inter_str_pred = generate_paths_first_step_residual_batch(
                 model,
                 prompts,
                 first_step_baselines,
                 max_steps=max_generate,
             )
+            print( ((time.process_time() -start_cpu)) *1000)
+
             generated = generated.cuda()
             if path_lengths_pred.dim() > 1:
                 path_lengths_pred = path_lengths_pred.squeeze(-1)

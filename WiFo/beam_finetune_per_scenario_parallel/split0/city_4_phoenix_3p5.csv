@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,num_classes,train_loss,train_top1_acc,train_top3_acc,val_loss,val_top1_acc,val_top3_acc,checkpoint,error
+city_4_phoenix_3p5,ok,7,48866,7679,64,1.8642284636930169,0.42878484013492096,0.6893750255338073,2.2259051796824596,0.3770022136164699,0.6128402133987105,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

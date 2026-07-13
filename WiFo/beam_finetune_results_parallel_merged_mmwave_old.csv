@@ -1,0 +1,220 @@
+scenario,top1_acc,top3_acc
+boston5g_3p5,0.14989344059447104,0.36372247212254377
+city_0_newyork_3p5_s,0.08175872093023256,0.19324127906976743
+city_10_austin_3p5,0.05866276853528095,0.14293885846990817
+city_11_santaclara_3p5,0.06708675454210092,0.17777353453553466
+city_12_fortworth_3p5,0.11151223425641467,0.2486294959049793
+city_13_columbus_3p5,0.1553326448834229,0.35595220532683186
+city_16_sanfrancisco_3p5_lwm,0.06870937790157845,0.1737465181888644
+city_17_seattle_3p5_s,0.10718002081165452,0.23427976811642773
+city_18_denver_3p5,0.08011159824716171,0.17405910153381646
+city_19_oklahoma_3p5_s,0.09246732400910922,0.22964916304625166
+city_1_losangeles_3p5,0.07343003877847837,0.18127759268062804
+city_23_beijing_3p5,0.04236827811508529,0.11189570889030702
+city_2_chicago_3p5,0.17085525036996135,0.33995714012047895
+city_31_barcelona_3p5,0.07915496724360224,0.19748629490741673
+city_35_san_francisco_3p5,0.05150442478139844,0.16849557523706318
+city_3_houston_3p5,0.08996336994699507,0.21963369960094983
+city_47_chicago_3p5,0.052426496642703414,0.13779667021691525
+city_4_phoenix_3p5,0.09171621732816125,0.23034943396026367
+city_5_philadelphia_3p5,0.1370078740673741,0.3000000000469328
+city_6_miami_3p5,0.10529508100180973,0.24067447085301596
+city_72_capetown_3p5,0.18965395948871552,0.4776797229748724
+city_7_sandiego_3p5,0.08708133971291866,0.2155318365850166
+city_84_baoding_3p5,0.12766992913821257,0.3253122802143105
+city_86_ankara_3p5,0.2276202659574412,0.4705619849560535
+city_88_tongshan_3p5,0.12501372450773246,0.3139945980381564
+city_89_nairobi_3p5,0.12838534345561814,0.3216505794567523
+city_8_dallas_3p5,0.11672942443616036,0.20952124800523036
+city_91_xiangyang_3p5,0.11795012332227466,0.24587558235214585
+city_95_delhi_3p5,0.07852015654903474,0.2195370224075814
+city_96_osaka_3p5,0.15700488023252548,0.34572111164693714
+city_9_sanfrancisco_3p5,0.08554236461213205,0.20060172385996117
+boston5g_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Expected generated movement channels with shape (N, 1, T, H, W), got (84476, 1, 8, 32)"
+city_0_newyork_3p5_s,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_0_newyork_3p5_s,ok,93,55035,13760,64,1.8737987265292702,0.40225311163834876,0.7106750249418627,6.253569833622422,0.08175872093023256,0.19324127906976743,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_10_austin_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_10_austin_3p5,ok,44,63208,15734,64,2.7432936638944465,0.22767687635608239,0.48300847992416035,4.5366325096267595,0.05866276853528095,0.14293885846990817,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_10_austin_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Expected generated movement channels with shape (N, 1, T, H, W), got (63105, 1, 8, 32)"
+city_10_austin_3p5,ok,24,63105,12800,64,1.5291283002142275,0.5320497583392758,0.7583075826004279,2.4072082948684694,0.399296875,0.6071875,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_11_santaclara_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_11_santaclara_3p5,ok,66,63082,15711,64,2.448688692132081,0.30499984149507137,0.557306363161499,4.760683212082388,0.06708675454210092,0.17777353453553466,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_11_santaclara_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Expected generated movement channels with shape (N, 1, T, H, W), got (62492, 1, 8, 32)"
+city_11_santaclara_3p5,ok,9,62492,14354,64,1.8159469759495548,0.45713051272851746,0.6761025411519703,2.425418478641667,0.33314755469066476,0.5626306256345011,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_12_fortworth_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_12_fortworth_3p5,ok,83,59076,14958,64,2.6594083781200077,0.2791488929453987,0.51201841694636,4.529778899412006,0.11151223425641467,0.2486294959049793,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_12_fortworth_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Expected generated movement channels with shape (N, 1, T, H, W), got (53661, 1, 8, 32)"
+city_12_fortworth_3p5,ok,23,53661,8004,64,2.0791126482419324,0.3715361249318909,0.6188293173802276,2.6309400685485276,0.2809845077014458,0.5107446277755192,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_13_columbus_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_13_columbus_3p5,ok,82,27207,6779,64,2.170970970330228,0.35009372582898124,0.6383651265188585,4.1520027431314155,0.1553326448834229,0.35595220532683186,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_13_columbus_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Expected generated movement channels with shape (N, 1, T, H, W), got (27182, 1, 8, 32)"
+city_13_columbus_3p5,ok,31,26986,2216,64,1.4792029721931452,0.535388720077077,0.7902616172099073,2.2140920015879058,0.43998194945848373,0.6719314079422383,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_17_seattle_3p5_s,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_17_seattle_3p5_s,ok,78,53858,13454,64,1.9382997071899277,0.43625830885866324,0.692673326085345,4.868025507954585,0.10718002081165452,0.23427976811642773,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_18_denver_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_18_denver_3p5,ok,81,71059,17563,64,2.867754507028583,0.24219310713883976,0.457366413823873,4.565874975104881,0.08011159824716171,0.17405910153381646,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_18_denver_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Expected generated movement channels with shape (N, 1, T, H, W), got (68257, 1, 8, 32)"
+city_18_denver_3p5,ok,85,68257,13040,64,2.1028871575899912,0.3787596876576327,0.6305140864620826,3.3946144779766994,0.20138036815301041,0.40391104320075616,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_1_losangeles_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_1_losangeles_3p5,ok,16,44492,11099,64,3.282611634827106,0.14231772004759569,0.3216308550119593,3.9658079044014842,0.07343003877847837,0.18127759268062804,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_1_losangeles_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Expected generated movement channels with shape (N, 1, T, H, W), got (44471, 1, 8, 32)"
+city_1_losangeles_3p5,ok,53,44471,5585,64,1.8112121795546987,0.4327764160377732,0.6801511096529738,2.672996354039055,0.2940017905236358,0.5251566696828673,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_2_chicago_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_2_chicago_3p5,ok,56,20536,5133,64,2.181343164990094,0.3283015193644785,0.6237339307744539,3.896261300535293,0.17085525036996135,0.33995714012047895,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_2_chicago_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Expected generated movement channels with shape (N, 1, T, H, W), got (20534, 1, 8, 32)"
+city_2_chicago_3p5,ok,21,20308,2217,64,1.3121606536754031,0.5434804017886135,0.8503545401062063,1.859848234693263,0.3951285518823468,0.7329724852867797,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_3_houston_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_3_houston_3p5,ok,84,54346,13650,64,2.4476538863964894,0.3048430427470741,0.5616420711670108,4.489195161197649,0.08996336994699507,0.21963369960094983,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_3_houston_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Expected generated movement channels with shape (N, 1, T, H, W), got (54220, 1, 8, 32)"
+city_3_houston_3p5,ok,10,54220,9350,64,1.8348340357594366,0.4379564736193724,0.6928992991867825,2.2839692867503447,0.34427807487268497,0.5744385026865464,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_4_phoenix_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_4_phoenix_3p5,ok,12,48946,12277,64,2.956614276685065,0.1923957013815467,0.4075511788538147,3.8685152458622194,0.09171621732816125,0.23034943396026367,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_4_phoenix_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Expected generated movement channels with shape (N, 1, T, H, W), got (48866, 1, 8, 32)"
+city_4_phoenix_3p5,ok,7,48866,7679,64,1.8642284636930169,0.42878484013492096,0.6893750255338073,2.2259051796824596,0.3770022136164699,0.6128402133987105,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_5_philadelphia_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_5_philadelphia_3p5,ok,46,25793,6350,64,2.698266933856604,0.2520838987680329,0.4819524677249565,3.878589607974676,0.1370078740673741,0.3000000000469328,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_5_philadelphia_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Expected generated movement channels with shape (N, 1, T, H, W), got (25260, 1, 8, 32)"
+city_5_philadelphia_3p5,ok,39,24935,1071,64,1.7484781600632027,0.4549829556572908,0.7137357128056109,2.5956383868982367,0.35294117623406185,0.5779645181114044,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_6_miami_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_6_miami_3p5,ok,96,65819,16487,64,2.6188370964618737,0.27443443382700444,0.514441118821343,4.12438220839536,0.10529508100180973,0.24067447085301596,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_6_miami_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Expected generated movement channels with shape (N, 1, T, H, W), got (65843, 1, 8, 32)"
+city_6_miami_3p5,ok,45,65843,11924,64,1.5470582890235,0.5142384156395315,0.7780933432658848,2.232678059722225,0.42938611205293603,0.6770379067626986,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_7_sandiego_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_7_sandiego_3p5,ok,86,54354,13585,64,2.59153352887547,0.2716635390186773,0.5254995032366913,4.410530793074522,0.08708133971291866,0.2155318365850166,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_7_sandiego_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Expected generated movement channels with shape (N, 1, T, H, W), got (53476, 1, 8, 32)"
+city_7_sandiego_3p5,ok,10,53476,8243,64,2.0103332868857535,0.3775338469304039,0.649020121126812,2.410897107316961,0.3015892272429835,0.5810991145447159,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_8_dallas_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_8_dallas_3p5,ok,60,73761,18590,64,2.629279205842125,0.3020701997034724,0.5220238337284252,4.521865300531988,0.11672942443616036,0.20952124800523036,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_8_dallas_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Expected generated movement channels with shape (N, 1, T, H, W), got (73130, 1, 8, 32)"
+city_8_dallas_3p5,ok,37,73130,15325,64,2.144625189309894,0.3801859701917026,0.5987829891907994,3.091090576271443,0.26871125610481467,0.46845024461652873,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_9_sanfrancisco_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_9_sanfrancisco_3p5,ok,88,49377,12298,64,2.5518053665455094,0.2861858760136398,0.543228628663074,4.773747303870116,0.08554236461213205,0.20060172385996117,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_9_sanfrancisco_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Expected generated movement channels with shape (N, 1, T, H, W), got (48923, 1, 8, 32)"
+city_9_sanfrancisco_3p5,ok,40,48923,6495,64,1.7282634675179918,0.47961081700423164,0.7235042822382192,2.6617428649288586,0.31562740594905736,0.5294842190610344,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+boston5g_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+boston5g_3p5,ok,100,84882,21115,64,1.5902109243528173,0.4679319525972247,0.7862562145053412,3.686158027779906,0.14989344059447104,0.36372247212254377,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_16_sanfrancisco_3p5_lwm,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_16_sanfrancisco_3p5_lwm,ok,4,34255,8616,64,3.163965888044953,0.12976207854042712,0.319486206441078,4.010930512498238,0.06870937790157845,0.1737465181888644,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_19_oklahoma_3p5_s,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_19_oklahoma_3p5_s,ok,73,69274,17444,64,1.5595728521875412,0.5208158905199756,0.7904552934757401,6.406583345146853,0.09246732400910922,0.22964916304625166,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_23_beijing_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_23_beijing_3p5,ok,81,36500,9205,64,2.1644526699275186,0.32402739726680596,0.6398356164383562,7.434789469033593,0.04236827811508529,0.11189570889030702,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_31_barcelona_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_31_barcelona_3p5,ok,18,30023,7479,64,2.1259565938501,0.3286813442947601,0.6466708856503611,5.5110686741852,0.07915496724360224,0.19748629490741673,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_35_san_francisco_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_35_san_francisco_3p5,ok,1,22554,5650,64,3.7553365155294705,0.057595105082790324,0.1605036800726092,3.7833794568492247,0.05150442478139844,0.16849557523706318,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_47_chicago_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_47_chicago_3p5,ok,2,22442,5646,64,3.3266554893141453,0.09419837804449273,0.2529631940245087,3.8086875452878752,0.052426496642703414,0.13779667021691525,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_72_capetown_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_72_capetown_3p5,ok,77,513282,127933,64,0.6432425272577115,0.7391843080411937,0.9829216687902557,8.048863270842707,0.18965395948871552,0.4776797229748724,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_84_baoding_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_84_baoding_3p5,ok,8,148090,36986,64,2.346712810633047,0.26982915792436873,0.5722533594270796,3.378485335335752,0.12766992913821257,0.3253122802143105,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_86_ankara_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_86_ankara_3p5,ok,46,134437,33613,64,1.9331497980956913,0.38138310138122267,0.7007148329683166,3.238463350185426,0.2276202659574412,0.4705619849560535,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_88_tongshan_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_88_tongshan_3p5,ok,23,181776,45539,64,1.816398253418612,0.39385287386673706,0.7178670451544759,3.8651090175696767,0.12501372450773246,0.3139945980381564,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_89_nairobi_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_89_nairobi_3p5,ok,49,256078,64026,64,1.5248465080977907,0.48262248222036475,0.7936292848296068,5.027765198827546,0.12838534345561814,0.3216505794567523,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_91_xiangyang_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_91_xiangyang_3p5,ok,98,147070,36490,64,3.010563321598951,0.19919086151033236,0.4006935473199914,3.7779092556223475,0.11795012332227466,0.24587558235214585,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_92_sãopaulo_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"PytorchStreamReader failed reading zip archive: not a ZIP archive. This is an internal miniz error. If you are seeing this error, there is a high likelihood that your checkpoint file is corrupted. This can happen if the checkpoint was not saved properly, was transferred incorrectly, or the file was modified after saving."
+city_92_sãopaulo_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"PytorchStreamReader failed reading zip archive: not a ZIP archive. This is an internal miniz error. If you are seeing this error, there is a high likelihood that your checkpoint file is corrupted. This can happen if the checkpoint was not saved properly, was transferred incorrectly, or the file was modified after saving."
+city_92_sãopaulo_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"PytorchStreamReader failed reading zip archive: not a ZIP archive. This is an internal miniz error. If you are seeing this error, there is a high likelihood that your checkpoint file is corrupted. This can happen if the checkpoint was not saved properly, was transferred incorrectly, or the file was modified after saving."
+city_92_sãopaulo_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"PytorchStreamReader failed reading zip archive: not a ZIP archive. This is an internal miniz error. If you are seeing this error, there is a high likelihood that your checkpoint file is corrupted. This can happen if the checkpoint was not saved properly, was transferred incorrectly, or the file was modified after saving."
+city_95_delhi_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embedding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_95_delhi_3p5,ok,91,227914,56979,64,1.8298996155071836,0.3832015584831086,0.7184464315482191,4.939170822598206,0.07852015654903474,0.2195370224075814,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
+city_96_osaka_3p5,error,,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,"Error(s) in loading state_dict for WiFo:
+	size mismatch for Embe dding.value_embedding.tokenConv.weight: copying a param with shape torch.Size([512, 2, 4, 4, 4]) from checkpoint, the shape in current model is torch.Size([512, 2, 2, 4, 4]).
+	size mismatch for decoder_pred.weight: copying a param with shape torch.Size([128, 512]) from checkpoint, the shape in current model is torch.Size([64, 512]).
+	size mismatch for decoder_pred.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64])."
+city_96_osaka_3p5,ok,97,195817,48973,64,1.9272750592440806,0.38337325156254,0.7073083542381292,3.875840051118713,0.15700488023252548,0.34572111164693714,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

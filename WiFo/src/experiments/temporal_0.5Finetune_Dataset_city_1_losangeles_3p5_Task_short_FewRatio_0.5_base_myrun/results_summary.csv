@@ -1,0 +1,2 @@
+stage,epoch,dataset,mask_strategy,mask_ratio,nmse,nmse_db,last_nmse,last_nmse_db
+0,1,city_1_losangeles_3p5,temporal,0.5,1.0027419,0.011891767,1.0046469,0.020134473

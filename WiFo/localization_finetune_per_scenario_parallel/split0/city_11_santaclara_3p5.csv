@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,train_loss,train_mde_m,val_loss,val_mde_m,val_median_mde_m,val_p90_mde_m,checkpoint,error
+city_11_santaclara_3p5,ok,1,63082,14448,42.71720956075676,69.49820709228516,41.78879876205428,69.78883361816406,58.86145782470703,130.8512725830078,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

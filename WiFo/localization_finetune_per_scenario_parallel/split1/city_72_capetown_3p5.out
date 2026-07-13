@@ -1,0 +1,3 @@
+Running 1 scenarios on split 1/1: ['city_72_capetown_3p5']
+[city_72_capetown_3p5] failed: Missing train data for city_72_capetown_3p5: /home/blessedg/Pathformer/WiFo/dataset/blessed_task_user_loc/_city_72_capetown_3p5_train_data.pt
+Appended results for city_72_capetown_3p5 to /home/blessedg/Pathformer/WiFo/localization_finetune_per_scenario_parallel/split1/city_72_capetown_3p5.csv

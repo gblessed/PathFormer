@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,train_loss,train_mde_m,val_loss,val_mde_m,val_median_mde_m,val_p90_mde_m,checkpoint,error
+city_91_xiangyang_3p5,ok,5,147070,35631,46.500672418842456,77.35198974609375,58.371150017186146,97.11524963378906,86.8169174194336,177.42544555664062,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,train_loss,train_mde_m,val_loss,val_mde_m,val_median_mde_m,val_p90_mde_m,checkpoint,error
+city_31_barcelona_3p5,ok,6,30023,5623,22.8021231394869,39.00786590576172,40.003978612561596,63.19732666015625,43.865535736083984,141.11740112304688,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

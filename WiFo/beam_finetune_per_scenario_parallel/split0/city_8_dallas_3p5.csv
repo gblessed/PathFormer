@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,num_classes,train_loss,train_top1_acc,train_top3_acc,val_loss,val_top1_acc,val_top3_acc,checkpoint,error
+city_8_dallas_3p5,ok,37,73130,15325,64,2.144625189309894,0.3801859701917026,0.5987829891907994,3.091090576271443,0.26871125610481467,0.46845024461652873,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

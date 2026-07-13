@@ -20,6 +20,7 @@ from multiscenario_direct_training_first_step_residual import (
     train_with_interactions,
 )
 from scene_feature_utils import SceneFeatureBank
+import joblib
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -155,6 +156,7 @@ def build_first_step_assignments_with_corridor(train_data, val_data, scene_bank,
     prompt_mean, prompt_std = _fit_standardizer(train_aug_prompts)
     train_aug_prompts = _apply_standardizer(train_aug_prompts, prompt_mean, prompt_std)
     val_aug_prompts = _apply_standardizer(val_aug_prompts, prompt_mean, prompt_std)
+    joblib.dump({"centers": kmeans.cluster_centers_,"n_clusters": kmeans.n_clusters, "cluster_std":stds, "mean":prompt_mean, "std":prompt_std}, "/home/blessedg/kayley/PathFormer/ns-allinone-3.40/ns-3.40/contrib/sionna/model/ns3sionna/cookbook.pkl")
 
     return train_aug_prompts, train_baselines, val_aug_prompts, val_baselines
 

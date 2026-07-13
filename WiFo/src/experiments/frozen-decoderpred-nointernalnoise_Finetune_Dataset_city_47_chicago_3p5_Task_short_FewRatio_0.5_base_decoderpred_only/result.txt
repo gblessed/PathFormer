@@ -1,0 +1,2 @@
+stage:0, epoch:9, best nmse: 0.6410772204399109
+{'city_47_chicago_3p5': {'random': {0.85: {'nmse': np.float32(0.30898064), 'nmse_db': np.float32(-5.100687), 'last_nmse': np.float32(0.52241963), 'last_nmse_db': np.float32(-2.8198051)}}, 'temporal': {0.5: {'nmse': np.float32(1.5723224), 'nmse_db': np.float32(1.965416), 'last_nmse': np.float32(1.6577393), 'last_nmse_db': np.float32(2.1951623)}}, 'fre': {0.5: {'nmse': np.float32(0.04192854), 'nmse_db': np.float32(-13.774902), 'last_nmse': np.float32(0.109937355), 'last_nmse_db': np.float32(-9.588547)}}}}

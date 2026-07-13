@@ -1,0 +1,116 @@
+\documentclass[10pt,conference]{IEEEtran}
+
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{xcolor}
+
+\begin{document}
+
+\title{Pilot-Assisted PathFormer Channel Estimation}
+\author{}
+\maketitle
+
+\section{Motivation}
+
+Directly synthesizing a complex-valued wireless channel from predicted multipath parameters is highly sensitive to phase errors. Even when a geometry-aware model predicts useful delays, powers, and angles, small spatial or temporal errors can cause large phase mismatch and poor normalized mean squared error (NMSE). Instead of requiring PathFormer to predict the complete complex channel, we use it as a geometric prior and rely on pilot observations to estimate the missing complex path coefficients.
+
+\section{Pilot Observations}
+
+Pilots are known reference signals transmitted over selected antenna--subcarrier resources. If the transmitted pilot symbol is known, the receiver can estimate the corresponding channel entry. For a pilot symbol $x_i$ and received value $y_i$,
+\begin{equation}
+    y_i = h_i x_i + n_i,
+\end{equation}
+where $h_i$ is the channel entry and $n_i$ is noise. Since $x_i$ is known, the receiver obtains a noisy observation of $h_i$:
+\begin{equation}
+    \tilde{h}_i \approx \frac{y_i}{x_i}.
+\end{equation}
+Thus, using $M$ pilots reveals only $M$ entries of the full channel vector $\mathbf{h}$, not the entire channel.
+
+\section{PathFormer Geometry Basis}
+
+Let PathFormer predict $K$ dominant paths at inference time. For each predicted path, we use its delay and angular information to construct a basis channel. The $k$-th basis vector $\mathbf{b}_k$ is the channel response that would be produced if only the $k$-th predicted path existed with unit power and zero phase. Stacking these basis vectors gives
+\begin{equation}
+    \mathbf{B}
+    =
+    \begin{bmatrix}
+    \mathbf{b}_1 & \mathbf{b}_2 & \cdots & \mathbf{b}_K
+    \end{bmatrix}.
+\end{equation}
+The use of unit power and zero phase does not assume the true path has unit power or zero phase. It only creates a normalized geometric signature for each predicted path. The unknown complex coefficient associated with each basis vector later absorbs the true amplitude and phase.
+
+The channel is then modeled as
+\begin{equation}
+    \mathbf{h} \approx \mathbf{B}\boldsymbol{\alpha},
+\end{equation}
+where $\boldsymbol{\alpha} \in \mathbb{C}^{K}$ contains the unknown complex path gains. Each coefficient $\alpha_k$ captures both amplitude and phase:
+\begin{equation}
+    \alpha_k = a_k e^{j\phi_k}.
+\end{equation}
+
+\section{Sparse Pilot Least Squares}
+
+Let $\Omega$ denote the set of pilot-observed channel entries. We select the rows of $\mathbf{B}$ and $\mathbf{h}$ corresponding to these pilot positions:
+\begin{equation}
+    \mathbf{h}_{\Omega} \approx \mathbf{B}_{\Omega}\boldsymbol{\alpha}.
+\end{equation}
+We then estimate the complex path coefficients using ridge-regularized least squares:
+\begin{equation}
+    \hat{\boldsymbol{\alpha}}
+    =
+    \arg\min_{\boldsymbol{\alpha}}
+    \left\|
+    \mathbf{B}_{\Omega}\boldsymbol{\alpha}
+    -
+    \mathbf{h}_{\Omega}
+    \right\|_2^2
+    +
+    \lambda
+    \left\|
+    \boldsymbol{\alpha}
+    \right\|_2^2.
+\end{equation}
+The closed-form solution is
+\begin{equation}
+    \hat{\boldsymbol{\alpha}}
+    =
+    \left(
+    \mathbf{B}_{\Omega}^{H}\mathbf{B}_{\Omega}
+    +
+    \lambda\mathbf{I}
+    \right)^{-1}
+    \mathbf{B}_{\Omega}^{H}\mathbf{h}_{\Omega},
+\end{equation}
+where $(\cdot)^H$ denotes the Hermitian transpose. The full channel estimate is reconstructed as
+\begin{equation}
+    \hat{\mathbf{h}} = \mathbf{B}\hat{\boldsymbol{\alpha}}.
+\end{equation}
+
+\section{Interpretation}
+
+This formulation separates the roles of the learned model and the real-time measurements. PathFormer provides the geometric support: which paths are likely present and what delay/angular structure they induce. The pilot observations provide the instantaneous complex coefficients, including phase. This avoids forcing PathFormer to learn absolute phase directly, which is unstable at sub-6 GHz and highly sensitive to small position or propagation changes.
+
+\section{Preliminary Result}
+
+Table~\ref{tab:pilot_pathformer_result} reports an inference-valid experiment on \texttt{city\_47\_chicago\_3p5}. PathFormer generates paths, the top predicted paths are used to construct $\mathbf{B}$, and sparse pilots are used to solve for $\hat{\boldsymbol{\alpha}}$. Lower NMSE is better.
+
+\begin{table}[t]
+\centering
+\caption{Pilot-assisted PathFormer channel estimation on \texttt{city\_47\_chicago\_3p5} over 1000 validation users.}
+\label{tab:pilot_pathformer_result}
+\begin{tabular}{lcc}
+\toprule
+Method & Pilots & NMSE (dB) \\
+\midrule
+Raw PathFormer channel synthesis & 0 & $4.07$ \\
+PathFormer support + LS & 8 & $-21.52$ \\
+PathFormer support + LS & 16 & $-27.25$ \\
+PathFormer support + LS & 32 & $-30.91$ \\
+PathFormer support + LS & 64 & $-33.28$ \\
+PathFormer support + LS & 128 & $-34.96$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The result suggests that PathFormer is more effective as a structural channel prior than as a direct complex-channel generator. Even though raw channel synthesis suffers from phase mismatch, the predicted multipath support enables accurate reconstruction from a small number of pilots.
+
+\end{document}

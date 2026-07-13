@@ -337,6 +337,7 @@ def channel_loss_for_batch(model, batch, model_family, scale=1e6):
     paths_out = paths[:, 1:, :]
     pred_ch = model(prompts, paths_in, interactions_in, first_step_baseline)
     gt_ch = build_gt_channel_batch(paths_out, path_padding_mask[:, 1:])
+    print(f"pred_s: {pred_ch[0,0,0,0]}\n GT_s:{gt_ch[0,0,0,0]}")
     gt_s = gt_ch * scale
     pred_s = pred_ch * scale
     mse = ((gt_s.real - pred_s.real) ** 2 + (gt_s.imag - pred_s.imag) ** 2).mean()
@@ -347,7 +348,7 @@ def channel_loss_for_batch(model, batch, model_family, scale=1e6):
 def evaluate_channel_head(model, val_loader, model_family):
     model.eval()
     scale = 1e6
-    nmse_logs, nmse_dbs, scores = [], [], []
+    nmses, nmse_logs, nmse_dbs, scores = [], [], [], []
     with torch.no_grad():
         for batch in tqdm(val_loader, desc=f"Eval channel head [{model_family}]", leave=False):
             prompts, paths, interactions, path_padding_mask, first_step_baseline = unpack_batch(batch, model_family)
@@ -367,9 +368,11 @@ def evaluate_channel_head(model, val_loader, model_family):
             score = np.clip(score, 0.0, 1.0)
             nmse_logs.extend(nmse_log.tolist())
             nmse_dbs.extend(nmse_db.tolist())
+            nmses.extend(nmse.tolist())
             scores.extend(score.tolist())
 
     return {
+        "ch_nmse": float(np.mean(nmses)) if nmses else 0.0,
         "ch_nmse_log": float(np.mean(nmse_logs)) if nmse_logs else 0.0,
         "ch_nmse_log_std": float(np.std(nmse_logs)) if nmse_logs else 0.0,
         "avg_ch_nmse_dB": float(np.mean(nmse_dbs)) if nmse_dbs else 0.0,

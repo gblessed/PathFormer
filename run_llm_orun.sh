@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=pretrain
+#SBATCH --job-name=class
 #SBATCH --output=logs/job_%j.out
 #SBATCH --error=logs/job_%j.err
-#SBATCH --time=70:00:00
-#SBATCH --gres=gpu:tesla:1
+#SBATCH --time=05:00:00
+#SBATCH --gres=gpu:h100:1
 source ~/.bashrc
 
 conda activate pathformer
@@ -58,9 +58,17 @@ conda activate pathformer
 
 
 
-python /home/blessedg/Pathformer/multiscenario_direct_training_first_step_residual_corridor_finetune.py \
-  --scenario city_47_chicago_3p5 \
-  --pretrained-checkpoint /home/blessedg/Pathformer/checkpoints_first_step_residual_corridor_concat/first_step_residual_corridor_concat_27scenarios_44710a4a_latest_checkpoint.pth \
-  --checkpoint-dir /home/blessedg/Pathformer/checkpoints_first_step_residual_corridor_finetune \
-  --skip-train \
-  --csv-log-file /home/blessedg/Pathformer/logs/first_step_residual_corridor_finetune_results.csv
+# python /home/blessedg/Pathformer/multiscenario_direct_training_first_step_residual_corridor_finetune.py \
+#   --scenario city_47_chicago_3p5 \
+#   --pretrained-checkpoint /home/blessedg/Pathformer/checkpoints_first_step_residual_corridor_concat/first_step_residual_corridor_concat_27scenarios_44710a4a_latest_checkpoint.pth \
+#   --checkpoint-dir /home/blessedg/Pathformer/checkpoints_first_step_residual_corridor_finetune \
+#   --skip-train \
+#   --csv-log-file /home/blessedg/Pathformer/logs/first_step_residual_corridor_finetune_results.csv
+
+
+
+# conda activate pathformer
+python /home/blessedg/Pathformer/multiscenario_direct_training_first_step_residual_corridor_classifier.py \
+  --scenario city_23_beijing_3p5 \
+  --num-value-bins 64 & python multiscenario_direct_training_first_step_residual_corridor_object_tokens.py --scenario city_91_xiangyang_3p5 &
+wait

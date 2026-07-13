@@ -1,0 +1,3 @@
+scenario,status,best_epoch,train_samples,val_samples,train_loss,train_mde_m,val_loss,val_mde_m,val_median_mde_m,val_p90_mde_m,checkpoint,error
+city_96_osaka_3p5,error,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,Missing train data for city_96_osaka_3p5: /home/blessedg/Pathformer/WiFo/dataset/blessed_task_user_loc/_city_96_osaka_3p5_train_data.pt
+city_96_osaka_3p5,ok,30,195817,48959,6.477337775386767,11.059596061706543,41.52412688020919,73.93180847167969,54.115074157714844,165.11428833007812,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

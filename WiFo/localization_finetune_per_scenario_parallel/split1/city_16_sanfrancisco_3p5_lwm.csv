@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,train_loss,train_mde_m,val_loss,val_mde_m,val_median_mde_m,val_p90_mde_m,checkpoint,error
+city_16_sanfrancisco_3p5_lwm,ok,6,34227,5578,21.99630630694448,38.284976959228516,41.78078167170938,69.41922760009766,67.77766418457031,121.78001403808594,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

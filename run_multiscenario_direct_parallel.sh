@@ -2,18 +2,19 @@
 #SBATCH --job-name=channel
 #SBATCH --output=logs/job_%j.out
 #SBATCH --error=logs/job_%j.err
-#SBATCH --time=70:00:00
+#SBATCH --time=00:30:00
 #SBATCH --gres=gpu:tesla:1
 
 source ~/.bashrc
 conda activate pathformer
 
+python /home/blessedg/Pathformer/multiscenario_direct_training.py
 # python /home/blessedg/Pathformer/channel_finetune_embedding_all_families.py \
 #   --epochs 50 \
 #   --batch-size 128 \
 #   --embed-pool mean \
 #   --csv-log-file /home/blessedg/Pathformer/logs/channel_finetune_embedding_all_families.csv
-python /home/blessedg/Pathformer/zero_shot_channel_estimation_all_families.py --phase-source groundtruth --csv-log-file "/home/blessedg/Pathformer/logs/zero_shot_gt_phase_channel_estimation_all_families.csv"
+# python /home/blessedg/Pathformer/zero_shot_channel_estimation_all_families.py --phase-source groundtruth --csv-log-file "/home/blessedg/Pathformer/logs/zero_shot_gt_phase_channel_estimation_all_families.csv"
 
 # mkdir -p logs
 # mkdir -p checkpoints2

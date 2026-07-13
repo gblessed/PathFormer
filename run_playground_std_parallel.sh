@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=fine-eval
+#SBATCH --job-name=beam-paf
 #SBATCH --output=logs/job_%j.out
 #SBATCH --error=logs/job_%j.err
 #SBATCH --time=24:00:00
-#SBATCH --gres=gpu:h200:1
+#SBATCH --gres=gpu:tesla:1
 
 source ~/.bashrc
 conda activate pathformer
@@ -55,6 +55,7 @@ SCENARIOS=(
     'city_88_tongshan_3p5'
 )
 
+python /home/blessedg/Pathformer/pre_train_finetune_beam_prediction_all_families.py
 # SCENARIOS=(
 #    'city_19_oklahoma_3p5_s'
 #     'city_16_sanfrancisco_3p5_lwm'
@@ -309,33 +310,7 @@ TRAIN_RATIO=(0.2 0.4 0.6)
 #   --csv-log-file /home/blessedg/Pathformer/logs/corridor_results.csv
 
 # python /home/blessedg/Pathformer/multiscenario_direct_training_first_step_residual_corridor_concat.py \
-#   --scenario city_0_newyork_3p5_s \
-#   --scenario city_1_losangeles_3p5 \
-#   --scenario city_2_chicago_3p5 \
-#   --scenario city_3_houston_3p5 \
-#   --scenario city_4_phoenix_3p5 \
-#   --scenario city_5_philadelphia_3p5 \
-#   --scenario city_6_miami_3p5 \
-#   --scenario city_7_sandiego_3p5 \
-#   --scenario city_8_dallas_3p5 \
-#   --scenario city_9_sanfrancisco_3p5 \
-#   --scenario city_10_austin_3p5 \
-#   --scenario city_11_santaclara_3p5 \
-#   --scenario city_12_fortworth_3p5 \
-#   --scenario city_13_columbus_3p5 \
-#   --scenario city_17_seattle_3p5_s \
-#   --scenario city_18_denver_3p5 \
-#   --scenario city_19_oklahoma_3p5_s \
-#   --scenario city_16_sanfrancisco_3p5_lwm \
-#   --scenario city_23_beijing_3p5 \
-#   --scenario city_31_barcelona_3p5 \
-#   --scenario city_35_san_francisco_3p5 \
-#   --scenario city_47_chicago_3p5 \
-#   --scenario city_89_nairobi_3p5 \
-#   --scenario city_91_xiangyang_3p5 \
-#   --scenario city_92_sãopaulo_3p5 \
-#   --scenario boston5g_3p5 \
-#   --scenario city_86_ankara_3p5 \
+
 #   --csv-log-file /home/blessedg/Pathformer/logs/first_step_residual_corridor_concat_all.csv \
 #   --checkpoint-dir /home/blessedg/Pathformer/checkpoints_first_step_residual_corridor_concat \
 #   --noise-prob 0.2

@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=beam-foundation
+#SBATCH --job-name=mm-beam-foundation
 #SBATCH --output=logs/job_%j.out
 #SBATCH --error=logs/job_%j.err
-#SBATCH --time=24:00:00
-#SBATCH --gres=gpu:h100:1
+#SBATCH --time=08:00:00
+#SBATCH --gres=gpu:tesla:1
 
 source ~/.bashrc
 conda activate pathformer
@@ -12,14 +12,14 @@ set -euo pipefail
 
 PROJECT_DIR="/home/blessedg/Pathformer"
 LOG_DIR="${PROJECT_DIR}/logs"
-SCRIPT_PATH="${PROJECT_DIR}/pre_train_finetune_beam_prediction_foundation.py"
+SCRIPT_PATH="${PROJECT_DIR}/pre_train_finetune_beam_prediction_foundation_mmwave.py"
 
 PRETRAINED_CHECKPOINT="${PRETRAINED_CHECKPOINT:-${PROJECT_DIR}/checkpoints_first_step_residual_corridor_concat/first_step_residual_corridor_concat_27scenarios_44710a4a_best_model_checkpoint.pth}"
 BEAM_HEAD_CHECKPOINT_DIR="${BEAM_HEAD_CHECKPOINT_DIR:-${PROJECT_DIR}/checkpoints_beam_heads_foundation}"
-RESULT_PREFIX="${RESULT_PREFIX:-beam_foundation}"
+RESULT_PREFIX="${RESULT_PREFIX:-beam_foundation_mmwave}"
 PER_SCENARIO_DIR="${PER_SCENARIO_DIR:-${LOG_DIR}/${RESULT_PREFIX}_per_scenario}"
 MERGED_CSV="${MERGED_CSV:-${LOG_DIR}/${RESULT_PREFIX}_all.csv}"
-EPOCHS="${EPOCHS:-30}"
+EPOCHS="${EPOCHS:-100}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 LR="${LR:-2e-3}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-1e-4}"
@@ -28,7 +28,7 @@ NEAREST_K="${NEAREST_K:-5}"
 CORRIDOR_K="${CORRIDOR_K:-5}"
 CORRIDOR_BINS="${CORRIDOR_BINS:-8}"
 USE_MATERIAL_FEATURES="${USE_MATERIAL_FEATURES:-1}"
-MAX_JOBS="${MAX_JOBS:-32}"
+MAX_JOBS="${MAX_JOBS:-8}"
 SKIP_TRAIN="${SKIP_TRAIN:-0}"
 
 mkdir -p "${LOG_DIR}"
@@ -40,14 +40,48 @@ if [[ ! -f "${PRETRAINED_CHECKPOINT}" ]]; then
     exit 1
 fi
 
+# SCENARIOS=(
+    # 'city_86_ankara_3p5'
+    # 'city_72_capetown_3p5'
+    # 'city_84_baoding_3p5'
+    # 'city_95_delhi_3p5'
+    # 'city_96_osaka_3p5'
+    # 'city_88_tongshan_3p5'
+    # 'city_0_newyork_3p5_s'
+    # 'city_1_losangeles_3p5'
+    # 'city_2_chicago_3p5'
+    # 'city_3_houston_3p5'
+    # 'city_4_phoenix_3p5'
+    # 'city_5_philadelphia_3p5'
+    # 'city_6_miami_3p5'
+    # 'city_7_sandiego_3p5'
+    # 'city_8_dallas_3p5'
+    # 'city_9_sanfrancisco_3p5'
+    # 'city_10_austin_3p5'
+    # 'city_11_santaclara_3p5'
+    # 'city_12_fortworth_3p5'
+    # 'city_13_columbus_3p5'
+    # 'city_17_seattle_3p5_s'
+    # 'city_18_denver_3p5'
+    # 'city_19_oklahoma_3p5_s'
+    # 'city_16_sanfrancisco_3p5_lwm'
+    # 'city_23_beijing_3p5'
+    # 'city_31_barcelona_3p5'
+    # 'city_35_san_francisco_3p5'
+    # 'city_47_chicago_3p5'
+    # 'city_89_nairobi_3p5'
+    # 'city_91_xiangyang_3p5'
+    # 'city_92_sãopaulo_3p5'
+    # 'boston5g_3p5'
+
+# )
+# 'city_1_losangeles_3p5'
+# 'city_2_chicago_3p5'
+# 'city_6_miami_3p5'
 SCENARIOS=(
-    'city_0_newyork_3p5_s'
-    'city_1_losangeles_3p5'
-    'city_2_chicago_3p5'
     'city_3_houston_3p5'
     'city_4_phoenix_3p5'
     'city_5_philadelphia_3p5'
-    'city_6_miami_3p5'
     'city_7_sandiego_3p5'
     'city_8_dallas_3p5'
     'city_9_sanfrancisco_3p5'
@@ -55,26 +89,8 @@ SCENARIOS=(
     'city_11_santaclara_3p5'
     'city_12_fortworth_3p5'
     'city_13_columbus_3p5'
-    'city_17_seattle_3p5_s'
     'city_18_denver_3p5'
-    'city_19_oklahoma_3p5_s'
-    'city_16_sanfrancisco_3p5_lwm'
-    'city_23_beijing_3p5'
-    'city_31_barcelona_3p5'
-    'city_35_san_francisco_3p5'
-    'city_47_chicago_3p5'
-    'city_89_nairobi_3p5'
-    'city_91_xiangyang_3p5'
-    'city_92_sãopaulo_3p5'
-    'boston5g_3p5'
-    'city_86_ankara_3p5'
-    'city_72_capetown_3p5'
-    'city_84_baoding_3p5'
-    'city_95_delhi_3p5'
-    'city_96_osaka_3p5'
-    'city_88_tongshan_3p5'
 )
-
 sanitize_name() {
     printf '%s' "$1" | sed 's/[^[:alnum:]_]/_/g'
 }

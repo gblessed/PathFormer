@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,train_loss,train_mde_m,val_loss,val_mde_m,val_median_mde_m,val_p90_mde_m,checkpoint,error
+boston5g_3p5,ok,44,84391,18109,7.771164266092216,13.000783920288086,29.13245385410284,51.40276336669922,23.550256729125977,132.97076416015625,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

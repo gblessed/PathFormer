@@ -8,7 +8,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from dataset.dataloaders import PreTrainMySeqDataLoader
@@ -31,7 +31,7 @@ from utils.utils import (
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
-csv_log_file = "beam_prediction_finetuning_foundation.csv"
+csv_log_file = "beam_prediction_finetuning_foundation_newx32.csv"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -45,7 +45,7 @@ def parse_args():
     parser.add_argument("--shard-index", type=int, default=None)
     parser.add_argument("--num-shards", type=int, default=None)
     parser.add_argument("--csv-log-file", type=str, default=csv_log_file)
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=2e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
@@ -72,6 +72,7 @@ def parse_args():
 
 def default_scenarios():
     return [
+        "city_47_chicago_3p5",
         "city_0_newyork_3p5_s",
         "city_1_losangeles_3p5",
         "city_2_chicago_3p5",
@@ -93,7 +94,6 @@ def default_scenarios():
         "city_23_beijing_3p5",
         "city_31_barcelona_3p5",
         "city_35_san_francisco_3p5",
-        "city_47_chicago_3p5",
         "city_89_nairobi_3p5",
         "city_91_xiangyang_3p5",
         "city_92_sãopaulo_3p5",
@@ -119,21 +119,66 @@ def compute_beam_label_from_channel(H, S):
     best = torch.argmax(prx, dim=1)
     return best, prx
 
+def make_dft_codebook(B=8, ant_params=None):
+    """Build a 64-beam azimuth sweep for the default 8x1 BS array."""
+    n_beams = int(B)
+    if ant_params is None:
+        ant_params = ChannelParameters().bs_antenna
 
-def make_dft_codebook(B=8):
-    params = ChannelParameters()
-    az_t = np.linspace(-np.pi, np.pi, B, endpoint=False, dtype=np.float32)
-    el_t = np.linspace(-np.pi, np.pi, B, endpoint=False, dtype=np.float32)
-    az_new = []
-    el_new = []
-    for az in az_t:
-        for el in el_t:
-            az_new.append(az)
-            el_new.append(el)
-    az_new = torch.tensor(az_new).unsqueeze(1)
-    el_new = torch.tensor(el_new).unsqueeze(1)
-    array_response = compute_single_array_response_torch(params.bs_antenna, az_new, el_new)
-    return array_response.squeeze(2).T
+    azimuth = torch.linspace(-np.pi / 2, np.pi / 2, steps=n_beams, dtype=torch.float32).unsqueeze(0)
+    elevation = torch.full_like(azimuth, np.pi / 2)
+    codebook = compute_single_array_response_torch(ant_params, elevation, azimuth)
+    return codebook.squeeze(0)
+
+
+# def make_dft_codebook(B=8):
+#     params = ChannelParameters()
+#     az_t = np.linspace(-np.pi, np.pi, B, endpoint=False, dtype=np.float32)
+#     el_t = np.linspace(-np.pi, np.pi, B, endpoint=False, dtype=np.float32)
+#     az_new = []
+#     el_new = []
+#     for az in az_t:
+#         for el in el_t:
+#             az_new.append(az)
+#             el_new.append(el)
+#     az_new = torch.tensor(az_new).unsqueeze(1)
+#     el_new = torch.tensor(el_new).unsqueeze(1)
+#     array_response = compute_single_array_response_torch(params.bs_antenna, az_new, el_new)
+#     return array_response.squeeze(2).T
+
+
+class BeamLabelDataset(Dataset):
+    def __init__(self, base_dataset, beam_labels):
+        self.base_dataset = base_dataset
+        self.beam_labels = beam_labels.long().cpu()
+
+    def __len__(self):
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx):
+        return self.base_dataset[idx], self.beam_labels[idx]
+
+    def collate_fn(self, batch):
+        base_items = [item[0] for item in batch]
+        labels = torch.stack([item[1] for item in batch], dim=0)
+        collated = self.base_dataset.collate_fn(base_items)
+        return (*collated, labels)
+
+
+class CachedBeamFeatureDataset(Dataset):
+    def __init__(self, features, labels):
+        self.features = features.float().cpu()
+        self.labels = labels.long().cpu()
+
+    def __len__(self):
+        return self.features.size(0)
+
+    def __getitem__(self, idx):
+        return self.features[idx], self.labels[idx]
+
+
+def _make_loader(dataset, batch_size, shuffle, collate_fn=None):
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_fn)
 
 
 def build_corridor_loaders(dataset, batch_size, pad_value, args):
@@ -169,8 +214,8 @@ def build_corridor_loaders(dataset, batch_size, pad_value, args):
     )
     train_data = FirstStepResidualDataset(base_train, train_aug_prompts, train_baselines)
     val_data = FirstStepResidualDataset(base_val, val_aug_prompts, val_baselines)
-    train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, collate_fn=train_data.collate_fn)
-    val_loader = DataLoader(val_data, batch_size=batch_size, shuffle=False, collate_fn=val_data.collate_fn)
+    train_loader = _make_loader(train_data, batch_size, True, train_data.collate_fn)
+    val_loader = _make_loader(val_data, batch_size, False, val_data.collate_fn)
     return train_data, val_data, train_loader, val_loader
 
 
@@ -184,8 +229,9 @@ class BeamHeadFinetuner(nn.Module):
             nn.Linear(hidden_dim // 2, n_beams),
         )
 
-    def forward(self, prompts, paths, interactions, path_padding_mask):
-        h_paths, _ = self.backbone.backbone.forward_hidden(prompts, paths, interactions)
+    def extract_summary_features(self, prompts, paths, interactions, path_padding_mask):
+        with torch.inference_mode():
+            h_paths, _ = self.backbone.backbone.forward_hidden(prompts, paths, interactions)
         valid_mask = path_padding_mask.bool()
         if valid_mask.size(1) != h_paths.size(1):
             valid_mask = valid_mask[:, : h_paths.size(1)]
@@ -194,8 +240,14 @@ class BeamHeadFinetuner(nn.Module):
             valid_mask[:, 0] = False
         valid_float = valid_mask.unsqueeze(-1).float()
         denom = valid_float.sum(dim=1).clamp(min=1.0)
-        summary = (h_paths * valid_float).sum(dim=1) / denom
-        return self.beam_head(summary)
+        return (h_paths * valid_float).sum(dim=1) / denom
+
+    def classify_summary_features(self, summary_features):
+        return self.beam_head(summary_features)
+
+    def forward(self, prompts, paths, interactions, path_padding_mask):
+        summary = self.extract_summary_features(prompts, paths, interactions, path_padding_mask)
+        return self.classify_summary_features(summary)
 
 
 def freeze_backbone(module):
@@ -235,29 +287,70 @@ def compute_beam_labels(paths, pad_value, mycomputer, S):
 
 
 def unpack_batch(batch):
-    prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask, first_step_baselines = batch
-    return prompts, paths, interactions, path_padding_mask
+    prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask, first_step_baselines, labels = batch
+    return prompts, paths, interactions, path_padding_mask, labels
+
+
+def _unpack_paths_from_batch(batch):
+    prompts, paths, path_lengths, interactions, env, env_prop, path_padding_mask, _ = batch
+    return paths
+
+
+def precompute_beam_labels_for_dataset(dataset, batch_size, pad_value, mycomputer, S, desc):
+    loader = _make_loader(dataset, batch_size, False, dataset.collate_fn)
+    all_labels = []
+    for batch in tqdm(loader, desc=desc, leave=False):
+        paths = _unpack_paths_from_batch(batch)
+        labels = compute_beam_labels(paths, pad_value, mycomputer, S)
+        all_labels.append(labels.cpu())
+    return torch.cat(all_labels, dim=0)
+
+
+def attach_cached_beam_labels(dataset, batch_size, pad_value, mycomputer, S, desc):
+    beam_labels = precompute_beam_labels_for_dataset(
+        dataset=dataset,
+        batch_size=batch_size,
+        pad_value=pad_value,
+        mycomputer=mycomputer,
+        S=S,
+        desc=desc,
+    )
+    return BeamLabelDataset(dataset, beam_labels)
 
 
 @torch.no_grad()
-def evaluate_beam_head(model, val_loader, pad_value, mycomputer, S, k_list=(1, 3)):
+def precompute_backbone_features(model, dataset, batch_size, desc):
     model.eval()
-    topk_correct = {k: 0 for k in k_list}
-    total = 0
-    for batch in tqdm(val_loader, desc="Eval [foundation]", leave=False):
-        prompts, paths, interactions, path_padding_mask = unpack_batch(batch)
+    loader = _make_loader(dataset, batch_size, False, dataset.collate_fn)
+    all_features = []
+    all_labels = []
+    for batch in tqdm(loader, desc=desc, leave=False):
+        prompts, paths, interactions, path_padding_mask, labels = unpack_batch(batch)
         prompts = prompts.to(device)
         paths = paths.to(device)
         interactions = interactions.to(device)
         path_padding_mask = path_padding_mask.to(device)
+        features = model.extract_summary_features(prompts, paths, interactions, path_padding_mask)
+        all_features.append(features.cpu())
+        all_labels.append(labels.cpu())
+    return CachedBeamFeatureDataset(torch.cat(all_features, dim=0), torch.cat(all_labels, dim=0))
 
-        labels = compute_beam_labels(paths, pad_value, mycomputer, S).to(device)
-        logits = model(prompts, paths, interactions, path_padding_mask)
+
+@torch.no_grad()
+def evaluate_beam_head(model, val_loader, k_list=(1, 3)):
+    model.eval()
+    topk_correct = {k: 0 for k in k_list}
+    total = 0
+    for batch in tqdm(val_loader, desc="Eval [foundation]", leave=False):
+        features, labels = batch
+        features = features.to(device)
+        labels = labels.to(device)
+        logits = model.classify_summary_features(features)
         max_k = max(k_list)
         topk = torch.topk(logits, k=max_k, dim=1).indices
         for k in k_list:
             topk_correct[k] += (topk[:, :k] == labels.unsqueeze(1)).any(dim=1).sum().item()
-        total += prompts.size(0)
+        total += features.size(0)
 
     return {f"top{k}_acc": topk_correct[k] / max(total, 1) for k in k_list}
 
@@ -265,9 +358,13 @@ def evaluate_beam_head(model, val_loader, pad_value, mycomputer, S, k_list=(1, 3
 def train_beam_head(model, train_loader, val_loader, pad_value, config, checkpoint_path):
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.beam_head.parameters(), lr=config["LR"], weight_decay=config["WEIGHT_DECAY"])
-    scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=3, mode="max")
-    mycomputer = MyChannelComputer()
-    S = make_dft_codebook(B=8)
+    # scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=3, mode="max")
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer,
+        T_0=25,
+        T_mult=1,
+        eta_min=1e-8,
+    )
     best_val_top1 = -1.0
 
     for epoch in range(config["epochs"]):
@@ -277,14 +374,10 @@ def train_beam_head(model, train_loader, val_loader, pad_value, config, checkpoi
         train_total = 0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch} [foundation Train]", leave=False)
         for batch in pbar:
-            prompts, paths, interactions, path_padding_mask = unpack_batch(batch)
-            prompts = prompts.to(device)
-            paths = paths.to(device)
-            interactions = interactions.to(device)
-            path_padding_mask = path_padding_mask.to(device)
-
-            labels = compute_beam_labels(paths, pad_value, mycomputer, S).to(device)
-            logits = model(prompts, paths, interactions, path_padding_mask)
+            features, labels = batch
+            features = features.to(device)
+            labels = labels.to(device)
+            logits = model.classify_summary_features(features)
             loss = criterion(logits, labels)
             optimizer.zero_grad()
             loss.backward()
@@ -293,7 +386,7 @@ def train_beam_head(model, train_loader, val_loader, pad_value, config, checkpoi
 
             preds = logits.argmax(dim=1)
             train_correct += (preds == labels).sum().item()
-            train_total += prompts.size(0)
+            train_total += features.size(0)
             train_losses.append(loss.item())
             pbar.set_postfix(
                 {
@@ -302,9 +395,11 @@ def train_beam_head(model, train_loader, val_loader, pad_value, config, checkpoi
                 }
             )
 
-        val_metrics = evaluate_beam_head(model, val_loader, pad_value, mycomputer, S, k_list=(1, 3))
+        val_metrics = evaluate_beam_head(model, val_loader, k_list=(1, 3))
         val_top1 = val_metrics["top1_acc"]
-        scheduler.step(val_top1)
+        # scheduler.step(val_top1)
+        scheduler.step()
+
         print(
             f"Epoch {epoch:02d} [foundation] "
             f"train_loss={np.mean(train_losses):.4f} "
@@ -332,12 +427,15 @@ def train_beam_head(model, train_loader, val_loader, pad_value, config, checkpoi
         checkpoint = torch.load(checkpoint_path, map_location=device)
         model.beam_head.load_state_dict(checkpoint["beam_head_state_dict"])
 
-    return evaluate_beam_head(model, val_loader, pad_value, mycomputer, S, k_list=(1, 3))
+    return evaluate_beam_head(model, val_loader, k_list=(1, 3))
 
 
 def build_foundation_objects(dataset, args, config):
     pad_value = config["PAD_VALUE"]
-    train_data, val_data, train_loader, val_loader = build_corridor_loaders(dataset, args.batch_size, pad_value, args)
+    mycomputer = MyChannelComputer()
+    # codebook = make_dft_codebook(B=8)
+    codebook = make_dft_codebook(B=32)
+    train_data, val_data, _, _ = build_corridor_loaders(dataset, args.batch_size, pad_value, args)
     prompt_dim = int(train_data.augmented_prompts[0].numel())
     backbone = FirstStepResidualPathDecoder(
         prompt_dim=prompt_dim,
@@ -346,8 +444,38 @@ def build_foundation_objects(dataset, args, config):
         n_heads=8,
     ).to(device)
     load_residual_checkpoint(backbone, config["backbone_checkpoint_path"])
+    train_data = attach_cached_beam_labels(
+        dataset=train_data,
+        batch_size=args.batch_size,
+        pad_value=pad_value,
+        mycomputer=mycomputer,
+        S=codebook,
+        desc="Precompute train labels [foundation]",
+    )
+    val_data = attach_cached_beam_labels(
+        dataset=val_data,
+        batch_size=args.batch_size,
+        pad_value=pad_value,
+        mycomputer=mycomputer,
+        S=codebook,
+        desc="Precompute val labels [foundation]",
+    )
     freeze_backbone(backbone)
     model = BeamHeadFinetuner(backbone=backbone, hidden_dim=512 * 2, n_beams=64).to(device)
+    cached_train = precompute_backbone_features(
+        model=model,
+        dataset=train_data,
+        batch_size=args.batch_size,
+        desc="Cache train features [foundation]",
+    )
+    cached_val = precompute_backbone_features(
+        model=model,
+        dataset=val_data,
+        batch_size=args.batch_size,
+        desc="Cache val features [foundation]",
+    )
+    train_loader = _make_loader(cached_train, args.batch_size, True)
+    val_loader = _make_loader(cached_val, args.batch_size, False)
     return model, train_loader, val_loader
 
 
@@ -389,14 +517,7 @@ def main():
         if args.skip_train and os.path.exists(head_checkpoint_path):
             checkpoint = torch.load(head_checkpoint_path, map_location=device)
             model.beam_head.load_state_dict(checkpoint["beam_head_state_dict"])
-            metrics = evaluate_beam_head(
-                model,
-                val_loader,
-                config["PAD_VALUE"],
-                MyChannelComputer(),
-                make_dft_codebook(B=8),
-                k_list=(1, 3),
-            )
+            metrics = evaluate_beam_head(model, val_loader, k_list=(1, 3))
         elif args.skip_train:
             print(f"Skipping {scenario} [foundation_corridor_concat] because head checkpoint is missing: {head_checkpoint_path}")
             continue

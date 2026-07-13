@@ -1,0 +1,4 @@
+stage,epoch,dataset,mask_strategy,mask_ratio,nmse,nmse_db,last_nmse,last_nmse_db
+0,5,city_47_chicago_3p5,random,0.85,0.53278315,-2.7344952,1.6636645,2.2106574
+0,5,city_47_chicago_3p5,temporal,0.5,1.2903883,1.1072043,1.450094,1.6139615
+0,5,city_47_chicago_3p5,fre,0.5,0.16272455,-7.885469,0.5271278,-2.7808409

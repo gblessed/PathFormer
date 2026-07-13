@@ -1,0 +1,2 @@
+stage:0, epoch:5, best nmse: 3.530061721801758
+{'city_23_beijing_3p5': {'random': {0.85: {'nmse': np.float32(3.2082634), 'nmse_db': np.float32(5.0627003), 'last_nmse': np.float32(38175.246), 'last_nmse_db': np.float32(45.817818)}}, 'temporal': {0.5: {'nmse': np.float32(6.064777), 'nmse_db': np.float32(7.8281484), 'last_nmse': np.float32(16581.479), 'last_nmse_db': np.float32(42.19623)}}, 'fre': {0.5: {'nmse': np.float32(1.3171448), 'nmse_db': np.float32(1.1963351), 'last_nmse': np.float32(19808.314), 'last_nmse_db': np.float32(42.968475)}}}}

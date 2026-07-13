@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,num_classes,train_loss,train_top1_acc,train_top3_acc,val_loss,val_top1_acc,val_top3_acc,checkpoint,error
+city_12_fortworth_3p5,ok,23,53661,8004,64,2.0791126482419324,0.3715361249318909,0.6188293173802276,2.6309400685485276,0.2809845077014458,0.5107446277755192,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

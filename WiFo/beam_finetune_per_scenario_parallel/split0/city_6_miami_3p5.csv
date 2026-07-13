@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,num_classes,train_loss,train_top1_acc,train_top3_acc,val_loss,val_top1_acc,val_top3_acc,checkpoint,error
+city_6_miami_3p5,ok,45,65843,11924,64,1.5470582890235,0.5142384156395315,0.7780933432658848,2.232678059722225,0.42938611205293603,0.6770379067626986,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

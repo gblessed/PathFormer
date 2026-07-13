@@ -1,0 +1,3 @@
+Running 1 scenarios on split 1/1: ['city_92_sãopaulo_3p5']
+[city_92_sãopaulo_3p5] failed: PytorchStreamReader failed reading zip archive: not a ZIP archive. This is an internal miniz error. If you are seeing this error, there is a high likelihood that your checkpoint file is corrupted. This can happen if the checkpoint was not saved properly, was transferred incorrectly, or the file was modified after saving.
+Appended results for city_92_sãopaulo_3p5 to /home/blessedg/Pathformer/WiFo/localization_finetune_per_scenario_parallel/split1/city_92_sãopaulo_3p5.csv

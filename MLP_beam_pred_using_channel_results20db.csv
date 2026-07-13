@@ -1,0 +1,2 @@
+scenario,train_data,test_data,model_path,snr_db,top1_mean,top1_std,top3_mean,top3_std
+city_0_newyork_3p5,/home/blessedg/Pathformer/lwm-competition-2025/blessed_task/_city_0_newyork_3p5_train_data.pt,/home/blessedg/Pathformer/lwm-competition-2025/blessed_task/_city_0_newyork_3p5_val_data.pt,checkpoint20db/city_0_newyork_3p5_best_model_checkpoint.pth,20.0,0.6093075816724882,0.0,0.8540168481610848,0.0

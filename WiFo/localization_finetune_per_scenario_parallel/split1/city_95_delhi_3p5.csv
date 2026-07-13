@@ -1,0 +1,3 @@
+scenario,status,best_epoch,train_samples,val_samples,train_loss,train_mde_m,val_loss,val_mde_m,val_median_mde_m,val_p90_mde_m,checkpoint,error
+city_95_delhi_3p5,error,,,,,,,,,,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,Missing train data for city_95_delhi_3p5: /home/blessedg/Pathformer/WiFo/dataset/blessed_task_user_loc/_city_95_delhi_3p5_train_data.pt
+city_95_delhi_3p5,ok,45,227914,56979,4.536643269261699,7.989947319030762,39.55054833859341,71.8399887084961,44.077125549316406,182.6108856201172,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

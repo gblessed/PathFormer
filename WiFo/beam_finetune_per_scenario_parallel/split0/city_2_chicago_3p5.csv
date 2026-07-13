@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,num_classes,train_loss,train_top1_acc,train_top3_acc,val_loss,val_top1_acc,val_top3_acc,checkpoint,error
+city_2_chicago_3p5,ok,21,20308,2217,64,1.3121606536754031,0.5434804017886135,0.8503545401062063,1.859848234693263,0.3951285518823468,0.7329724852867797,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

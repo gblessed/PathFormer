@@ -21,20 +21,47 @@ def compute_beam_label_from_channel(H, S):
     return best, prx
 
 
-def make_dft_codebook(B=8):
-    params = ChannelParameters()
-    az_t = np.linspace(-np.pi, np.pi, B, endpoint=False, dtype=np.float32)
-    el_t = np.linspace(-np.pi, np.pi, B, endpoint=False, dtype=np.float32)
-    az_new = []
-    el_new = []
-    for az in az_t:
-        for el in el_t:
-            az_new.append(az)
-            el_new.append(el)
-    az_new = torch.tensor(az_new).unsqueeze(1)
-    el_new = torch.tensor(el_new).unsqueeze(1)
-    array_response = compute_single_array_response_torch(params.bs_antenna, az_new, el_new)
-    return array_response.squeeze(2).T
+# def make_dft_codebook(B=8, ant_params=None):
+#     """Build a 64-beam azimuth sweep for the default 8x1 BS array."""
+#     n_beams = int(B)
+#     if ant_params is None:
+#         ant_params = ChannelParameters().bs_antenna
+
+#     azimuth = torch.linspace(-np.pi / 2, np.pi / 2, steps=n_beams, dtype=torch.float32).unsqueeze(0)
+#     elevation = torch.full_like(azimuth, np.pi / 2)
+#     codebook = compute_single_array_response_torch(ant_params, elevation, azimuth)
+#     return codebook.squeeze(0)
+
+def make_dft_codebook(B=32, ant_params=None):
+    """Build an easier azimuth codebook for the default 8x1 BS array."""
+    if ant_params is None:
+        ant_params = ChannelParameters().bs_antenna
+
+    n_beams = int(B)
+
+    # Sample uniformly in spatial frequency u = sin(phi), not in phi itself.
+    u = torch.linspace(-0.95, 0.95, steps=n_beams, dtype=torch.float32).unsqueeze(0)
+    azimuth = torch.asin(u)
+
+    elevation = torch.full_like(azimuth, np.pi / 2)
+    codebook = compute_single_array_response_torch(ant_params, elevation, azimuth)
+    return codebook.squeeze(0)
+# def make_dft_codebook(B=8):
+#     params = ChannelParameters()
+#     az_t = np.linspace(-np.pi, np.pi, B, endpoint=False, dtype=np.float32)
+#     el_t = np.linspace(-np.pi, np.pi, B, endpoint=False, dtype=np.float32)
+#     az_new = []
+#     el_new = []
+#     for az in az_t:
+#         for el in el_t:
+#             az_new.append(az)
+#             el_new.append(el)
+#     az_new = torch.tensor(az_new).unsqueeze(1)
+#     el_new = torch.tensor(el_new).unsqueeze(1)
+#     array_response = compute_single_array_response_torch(params.bs_antenna, az_new, el_new)
+#     return array_response.squeeze(2).T
+
+
 
 
 def parse_args():
@@ -55,10 +82,10 @@ def main():
     train_ratio = args.train_ratio
     seed = args.seed
     dataset = dm.load(scenario)
-    dataset.compute_channels()
+    dataset.compute_channels(ChannelParameters())
     channels = dataset.channels
     # S = make_azimuth_codebook(n_beams=64)
-    S = make_dft_codebook()
+    S = make_dft_codebook(B = 64)
     if isinstance(dataset.n_ue, int):
             dataset = [dataset]
             channels = [channels]

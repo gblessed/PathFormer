@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,train_loss,train_mde_m,val_loss,val_mde_m,val_median_mde_m,val_p90_mde_m,checkpoint,error
+city_23_beijing_3p5,ok,45,36487,8475,6.577027023875919,11.182031631469727,49.20563775841817,80.60868835449219,59.655120849609375,173.28428649902344,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

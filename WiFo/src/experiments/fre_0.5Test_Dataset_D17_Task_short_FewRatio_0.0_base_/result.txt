@@ -1,0 +1,2 @@
+stage:0, epoch:0, best nmse: 0.3179440200328827
+{'D17': {'fre': {0.5: {'nmse': np.float32(0.31794402), 'nmse_db': np.float32(-4.9764934), 'last_nmse': np.float32(0.25112316), 'last_nmse_db': np.float32(-6.0011325)}}}}

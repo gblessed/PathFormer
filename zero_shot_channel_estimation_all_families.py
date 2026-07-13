@@ -255,6 +255,7 @@ def _batch_channel_inputs(paths_out, generated, path_lengths, phase_source, pad_
     for b in range(B):
         n_valid = int(round(float(path_lengths[b].item()) * 25))
         n_valid = max(0, min(n_valid, paths_np.shape[1], T_gen))
+        # print(f"generated len: {T_gen}")
         if n_valid == 0:
             continue
         gt_b = paths_np[b, :n_valid, :]

@@ -108,6 +108,8 @@ class ChannelParameters(DotDict):
         # BS Antenna Parameters
         c.PARAMSET_ANT_BS: {
             c.PARAMSET_ANT_SHAPE: np.array([8, 1]), # Antenna dimensions in X - Y - Z
+            # c.PARAMSET_ANT_SHAPE: np.array([32, 1]), # Antenna dimensions in X - Y - Z
+
             c.PARAMSET_ANT_SPACING: 0.5,
             c.PARAMSET_ANT_ROTATION: np.array([0, 0, -135]), # Rotation around X - Y - Z axes
             c.PARAMSET_ANT_RAD_PAT: c.PARAMSET_ANT_RAD_PAT_VALS[0] # 'isotropic'

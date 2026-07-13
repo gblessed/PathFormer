@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,train_loss,train_mde_m,val_loss,val_mde_m,val_median_mde_m,val_p90_mde_m,checkpoint,error
+city_5_philadelphia_3p5,ok,47,25482,1082,8.796314798151059,15.382347106933594,38.37600760186666,65.95285034179688,56.534996032714844,132.38206481933594,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

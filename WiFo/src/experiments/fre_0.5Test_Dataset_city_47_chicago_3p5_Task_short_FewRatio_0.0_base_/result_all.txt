@@ -1,0 +1,8 @@
+stage:0, epoch:0, best nmse: 0.9289853572845459
+{'city_47_chicago_3p5': {'fre': {0.5: {'nmse': np.float32(0.92898536)}}}}
+stage:0, epoch:0, best nmse: 0.9289853572845459
+{'city_47_chicago_3p5': {'fre': {0.5: {'nmse': np.float32(0.92898536), 'nmse_db': np.float32(-0.3199113), 'last_nmse': np.float32(0.9086736), 'last_nmse_db': np.float32(-0.41592097)}}}}
+stage:0, epoch:0, best nmse: 0.40542060136795044
+{'city_47_chicago_3p5': {'fre': {0.5: {'nmse': np.float32(0.4054206), 'nmse_db': np.float32(-3.9209418), 'last_nmse': np.float32(0.46773487), 'last_nmse_db': np.float32(-3.3000026)}}}}
+stage:0, epoch:0, best nmse: 0.5224623084068298
+{'city_47_chicago_3p5': {'fre': {0.5: {'nmse': np.float32(0.5224623), 'nmse_db': np.float32(-2.8194504), 'last_nmse': np.float32(0.6669564), 'last_nmse_db': np.float32(-1.7590255)}}}}

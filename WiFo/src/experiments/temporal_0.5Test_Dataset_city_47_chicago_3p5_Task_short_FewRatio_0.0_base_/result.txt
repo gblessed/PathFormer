@@ -1,0 +1,2 @@
+stage:0, epoch:0, best nmse: 1.8696426153182983
+{'city_47_chicago_3p5': {'temporal': {0.5: {'nmse': np.float32(1.8696426), 'nmse_db': np.float32(2.717586), 'last_nmse': np.float32(2.289402), 'last_nmse_db': np.float32(3.5972207)}}}}

@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,train_loss,train_mde_m,val_loss,val_mde_m,val_median_mde_m,val_p90_mde_m,checkpoint,error
+city_89_nairobi_3p5,ok,48,256078,64026,5.138306855613531,8.906167030334473,38.401422877218316,68.67132568359375,43.5977668762207,176.72885131835938,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

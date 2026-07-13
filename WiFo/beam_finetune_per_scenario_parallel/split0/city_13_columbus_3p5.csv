@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,num_classes,train_loss,train_top1_acc,train_top3_acc,val_loss,val_top1_acc,val_top3_acc,checkpoint,error
+city_13_columbus_3p5,ok,31,26986,2216,64,1.4792029721931452,0.535388720077077,0.7902616172099073,2.2140920015879058,0.43998194945848373,0.6719314079422383,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,

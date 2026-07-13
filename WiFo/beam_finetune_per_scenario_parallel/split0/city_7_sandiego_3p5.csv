@@ -1,0 +1,2 @@
+scenario,status,best_epoch,train_samples,val_samples,num_classes,train_loss,train_top1_acc,train_top3_acc,val_loss,val_top1_acc,val_top3_acc,checkpoint,error
+city_7_sandiego_3p5,ok,10,53476,8243,64,2.0103332868857535,0.3775338469304039,0.649020121126812,2.410897107316961,0.3015892272429835,0.5810991145447159,/home/blessedg/Pathformer/WiFo/src/weights/wifo_base.pkl,
